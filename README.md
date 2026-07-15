@@ -124,44 +124,50 @@ A containerised web application running on OpenShift that:
 
 ```mermaid
 flowchart LR
-    Browser["User browser\nupload SEG-Y / view results / download .npy"]
-    Route["OpenShift Route HTTPS"]
+    %% Red Hat Class Definitions
+    classDef default fill:#F0F0F0,stroke:#EE0000,stroke-width:2px,color:#151515;
+    classDef rhRed fill:#EE0000,stroke:#C90000,stroke-width:2px,color:#FFFFFF;
+    classDef rhBlack fill:#151515,stroke:#000000,stroke-width:2px,color:#FFFFFF;
+    classDef rhOutline fill:#FFFFFF,stroke:#151515,stroke-width:2px,color:#151515;
+
+    Browser["User browser\nupload SEG-Y / view results / download .npy"]:::rhBlack
+    Route["OpenShift Route HTTPS"]:::rhRed
     Browser -->|HTTPS| Route
 
     subgraph Quay["quay.io/rh-ai-quickstart  supply chain integrity"]
-        ModelCar["ModelCar OCI image\nhrnet.pth.enc\nAES-256-GCM encrypted"]
+        ModelCar["ModelCar OCI image\nhrnet.pth.enc\nAES-256-GCM encrypted"]:::rhOutline
     end
 
     subgraph Trustee["Trustee"]
         direction TB
         subgraph AS["Attestation Service AS"]
-            ASVerify["Verifies evidence bundle\n• cosign sig on deepseismic-app:v1\n• NVIDIA CC report\n• CPU TEE TD quote\nreturns verified claims"]
+            ASVerify["Verifies evidence bundle\n• cosign sig on deepseismic-app:v1\n• NVIDIA CC report\n• CPU TEE TD quote\nreturns verified claims"]:::default
         end
         subgraph KBS["Key Broker Service KBS"]
-            KBSPolicy["Evaluates OPA Rego policy\nagainst AS verified claims\nreleases AES-256-GCM key if all pass"]
+            KBSPolicy["Evaluates OPA Rego policy\nagainst AS verified claims\nreleases AES-256-GCM key if all pass"]:::rhRed
         end
         ASVerify -->|verified claims| KBSPolicy
     end
 
-    NRAS["NVIDIA NRAS\nexternal"]
-    PCS["Intel PCS / AMD\nexternal"]
+    NRAS["NVIDIA NRAS\nexternal"]:::rhBlack
+    PCS["Intel PCS / AMD\nexternal"]:::rhBlack
     ASVerify -->|validate GPU CC report| NRAS
     ASVerify -->|validate CPU TEE quote| PCS
 
     subgraph Pod["OpenShift Pod · kata-cc-nvidia-gpu"]
         direction TB
         subgraph Init1["init-attestation  init container 1"]
-            Agent["Attestation Agent\nCPU TEE quote TDX or SEV-SNP\nNVIDIA NRAS report H100 CC mode\ndeepseismic-app:v1 image digest + cosign sig"]
+            Agent["Attestation Agent\nCPU TEE quote TDX or SEV-SNP\nNVIDIA NRAS report H100 CC mode\ndeepseismic-app:v1 image digest + cosign sig"]:::default
         end
         subgraph Init2["init-model  init container 2"]
-            ModelPull["Pull encrypted ModelCar from quay.io\nDecrypt into TEE-encrypted memory\nMount at /models-cache"]
+            ModelPull["Pull encrypted ModelCar from quay.io\nDecrypt into TEE-encrypted memory\nMount at /models-cache"]:::default
         end
         subgraph CC["Kata Confidential Container · hardware Trust Domain · Encrypted Memory TDX or SEV-SNP"]
-            Gradio["Gradio UI\nport 7860"]
-            Convert["convert_segy.py\nSEG-Y to numpy subset"]
-            DeepSeismic["DeepSeismic HRNet\nNVIDIA H100 CC mode\nGPU via PCI passthrough"]
-            Plot["Matplotlib inline plot"]
-            NPY[".npy facies volume download"]
+            Gradio["Gradio UI\nport 7860"]:::rhOutline
+            Convert["convert_segy.py\nSEG-Y to numpy subset"]:::rhOutline
+            DeepSeismic["DeepSeismic HRNet\nNVIDIA H100 CC mode\nGPU via PCI passthrough"]:::rhRed
+            Plot["Matplotlib inline plot"]:::rhOutline
+            NPY[".npy facies volume download"]:::rhOutline
         end
         Init1 --> Init2 --> CC
         Gradio --> Convert --> DeepSeismic --> Plot
@@ -172,6 +178,12 @@ flowchart LR
     Agent -->|evidence bundle| AS
     KBSPolicy -->|AES key| Init1
     ModelCar -->|pull encrypted| ModelPull
+
+    %% Subgraph Styling for cleaner boundaries
+    style Pod fill:#ffffff,stroke:#151515,stroke-width:2px,stroke-dasharray: 5 5
+    style CC fill:#fdf4f4,stroke:#EE0000,stroke-width:2px
+    style Trustee fill:#f9f9f9,stroke:#151515,stroke-width:1px
+    style Quay fill:#f9f9f9,stroke:#151515,stroke-width:1px
 ```
 
 ---
