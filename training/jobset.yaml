@@ -1,0 +1,82 @@
+apiVersion: jobset.x-k8s.io/v1alpha2
+kind: JobSet
+metadata:
+  name: ${JOBSET_NAME}
+spec:
+  network:
+    enableDNSHostnames: true
+    publishNotReadyAddresses: true
+  replicatedJobs:
+    - name: workers
+      replicas: 1
+      template:
+        spec:
+          backoffLimit: 1
+          completionMode: Indexed
+          completions: ${NUM_WORKERS}
+          parallelism: ${NUM_WORKERS}
+          template:
+            spec:
+              restartPolicy: OnFailure
+              tolerations:
+                - effect: NoSchedule
+                  key: g5-gpu
+                  operator: Exists
+              containers:
+                - name: pytorch
+                  image: registry.redhat.io/rhoai/odh-training-cuda128-torch28-py312-rhel9:v3.0
+                  command:
+                    - /bin/sh
+                    - -c
+                    - |
+                      torchrun \
+                        --nproc_per_node=1 \
+                        --nnodes=${NUM_WORKERS} \
+                        --rdzv_id=100 \
+                        --rdzv_backend=c10d \
+                        --rdzv_endpoint=$MASTER_ADDR:$MASTER_PORT \
+                        /workspace/train.py
+                  env:
+                    - name: MASTER_ADDR
+                      value: "${JOBSET_NAME}-workers-0-0.${JOBSET_NAME}"
+                    - name: MASTER_PORT
+                      value: "29500"
+                    - name: WORLD_SIZE
+                      value: "${NUM_WORKERS}"
+                    - name: RANK
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.annotations['batch.kubernetes.io/job-completion-index']
+                    - name: EPOCHS
+                      value: "${EPOCHS}"
+                    - name: BATCH_SIZE
+                      value: "${BATCH_SIZE}"
+                  resources:
+                    limits:
+                      cpu: "4"
+                      memory: 16Gi
+                      nvidia.com/gpu: "1"
+                    requests:
+                      cpu: "4"
+                      memory: 16Gi
+                      nvidia.com/gpu: "1"
+                  volumeMounts:
+                    - mountPath: /workspace
+                      name: script-vol
+                    - mountPath: /data
+                      name: data-vol
+                    - mountPath: /dev/shm
+                      name: dshm
+              volumes:
+                - name: script-vol
+                  configMap:
+                    name: ${JOBSET_NAME}-script
+                - name: data-vol
+                  persistentVolumeClaim:
+                    claimName: deepseismic-training-data
+                - name: dshm
+                  emptyDir:
+                    medium: Memory
+                    sizeLimit: 4Gi
+  successPolicy:
+    operator: All

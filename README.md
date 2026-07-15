@@ -70,12 +70,12 @@ AI-driven seismic facies classification changes this:
 
 **Why confidential computing matters here.** Seismic data is among the most commercially sensitive assets an oil and gas company owns. Running AI interpretation on proprietary field data in a shared cloud or on-premises cluster exposes that data to the underlying infrastructure. Confidential computing hardware encrypts the memory of the inference process — the seismic data and model weights are never visible to the host OS, hypervisor, or other tenants, even with physical access to the node. This quickstart uses Intel® TDX (Trust Domain Extensions) for CPU memory encryption, but the same pattern applies to AMD SEV-SNP on AMD EPYC platforms. The NVIDIA H100 extends this protection to the GPU: when running in Confidential Computing mode, GPU memory and the PCIe bus between CPU and GPU are also encrypted, closing the gap that would otherwise exist between the CPU Trust Domain and the accelerator.
 
-**Why an encrypted model matters.** The pre-trained DeepSeismic model is published to quay.io as an encrypted ModelCar OCI image. The AES-256-GCM decryption key is held by a Key Broker Server (KBS) that will only release it after three independent attestation checks pass: the **application container** (`quay.io/rh-ai-quickstart/deepseismic-app:v1`) must be signed by the model owner — proving that the code receiving the key is trusted — the GPU must be confirmed to be running in NVIDIA Confidential Computing mode, and the CPU must be confirmed to be running in a hardware-verified Trust Domain (Intel® TDX or AMD SEV-SNP). The ModelCar image is signed separately to verify the integrity of the encrypted artifact in the registry. Together, this means the model weights are protected both at rest (encrypted in the registry) and in transit (decrypted only inside the hardware Trust Domain by a specific, verified application), and the inference workload cannot be redirected to an unattested or untrusted container.
+**Why an encrypted model matters.** The pre-trained DeepSeismic model is published to quay.io as an encrypted ModelCar OCI image. The AES-256-GCM decryption key is held by a Key Broker Server (KBS) that will only release it after three independent attestation checks pass: the **application container** (`quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-deepseismic-app:v1`) must be signed by the model owner — proving that the code receiving the key is trusted — the GPU must be confirmed to be running in NVIDIA Confidential Computing mode, and the CPU must be confirmed to be running in a hardware-verified Trust Domain (Intel® TDX or AMD SEV-SNP). The ModelCar image is signed separately to verify the integrity of the encrypted artifact in the registry. Together, this means the model weights are protected both at rest (encrypted in the registry) and in transit (decrypted only inside the hardware Trust Domain by a specific, verified application), and the inference workload cannot be redirected to an unattested or untrusted container.
 
 ### What this quickstart provides
 
 - ✓ A browser-based application for uploading, classifying, and visualising seismic data — no command line required
-- ✓ The pre-trained [Microsoft DeepSeismic](https://github.com/microsoft/seismic-deeplearning) model (MIT license — commercial use permitted), published as an AES-256-GCM encrypted ModelCar OCI image at `quay.io/rh-ai-quickstart/deepseismic-model:v1`
+- ✓ The pre-trained [Microsoft DeepSeismic](https://github.com/microsoft/seismic-deeplearning) model (MIT license — commercial use permitted), published as an AES-256-GCM encrypted ModelCar OCI image at `quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-deepseismic-model:v1`
 - ✓ A [Trustee](https://github.com/confidential-containers/trustee) Key Broker Server that enforces a three-factor attestation policy before releasing the model decryption key
 - ✓ Inference running inside a **Kata confidential container** backed by **Intel® TDX or AMD SEV-SNP** — seismic data and decrypted model weights protected in encrypted memory
 - ✓ GPU passthrough to the hardware Trust Domain via `kata-cc-nvidia-gpu` runtime
@@ -88,8 +88,8 @@ AI-driven seismic facies classification changes this:
 
 A containerised web application running on OpenShift that:
 
-1. Pulls an encrypted ModelCar OCI image from `quay.io/rh-ai-quickstart/deepseismic-model:v1`
-2. Verifies a three-factor attestation policy via the Key Broker Server — the application container (`deepseismic-app:v1`) must be cosign-signed by the model owner, the GPU must be in NVIDIA CC mode, and the CPU must be in a hardware TEE (Intel® TDX or AMD SEV-SNP) — and receives the AES-256-GCM decryption key only if all three pass
+1. Pulls an encrypted ModelCar OCI image from `quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-deepseismic-model:v1`
+2. Verifies a three-factor attestation policy via the Key Broker Server — the application container (`conf-gpu-accel-seismic-interp-deepseismic-app:v1`) must be cosign-signed by the model owner, the GPU must be in NVIDIA CC mode, and the CPU must be in a hardware TEE (Intel® TDX or AMD SEV-SNP) — and receives the AES-256-GCM decryption key only if all three pass
 3. Decrypts the model weights inside the hardware Trust Domain — in encrypted memory, never on disk in plaintext
 4. Presents a browser UI where a user uploads a Volve SEG-Y seismic file
 5. Runs Microsoft DeepSeismic inference on a GPU, classifying every point in the volume as one of six North Sea rock types
@@ -141,7 +141,7 @@ flowchart LR
     subgraph Trustee["Trustee"]
         direction TB
         subgraph AS["Attestation Service AS"]
-            ASVerify["Verifies evidence bundle\n• cosign sig on deepseismic-app:v1\n• NVIDIA CC report\n• CPU TEE TD quote\nreturns verified claims"]:::default
+            ASVerify["Verifies evidence bundle\n• cosign sig on conf-gpu-accel-seismic-interp-deepseismic-app:v1\n• NVIDIA CC report\n• CPU TEE TD quote\nreturns verified claims"]:::default
         end
         subgraph KBS["Key Broker Service KBS"]
             KBSPolicy["Evaluates OPA Rego policy\nagainst AS verified claims\nreleases AES-256-GCM key if all pass"]:::rhRed
@@ -157,7 +157,7 @@ flowchart LR
     subgraph Pod["OpenShift Pod · kata-cc-nvidia-gpu"]
         direction TB
         subgraph Init1["init-attestation  init container 1"]
-            Agent["Attestation Agent\nCPU TEE quote TDX or SEV-SNP\nNVIDIA NRAS report H100 CC mode\ndeepseismic-app:v1 image digest + cosign sig"]:::default
+            Agent["Attestation Agent\nCPU TEE quote TDX or SEV-SNP\nNVIDIA NRAS report H100 CC mode\nconf-gpu-accel-seismic-interp-deepseismic-app:v1 image digest + cosign sig"]:::default
         end
         subgraph Init2["init-model  init container 2"]
             ModelPull["Pull encrypted ModelCar from quay.io\nDecrypt into TEE-encrypted memory\nMount at /models-cache"]:::default
@@ -333,11 +333,11 @@ oc create configmap kbs-policy \
 ```
 
 The supplied `policy.rego` enforces:
-- **Application container signature**: the running application container (`quay.io/rh-ai-quickstart/deepseismic-app:v1`) must be signed by the key in `cosign.pub` — the Attestation Agent measures the container image digest inside the TEE and includes it in the evidence bundle, proving the code requesting the key is the trusted application and not an arbitrary container
+- **Application container signature**: the running application container (`quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-deepseismic-app:v1`) must be signed by the key in `cosign.pub` — the Attestation Agent measures the container image digest inside the TEE and includes it in the evidence bundle, proving the code requesting the key is the trusted application and not an arbitrary container
 - **NVIDIA CC attestation**: the H100 must be running in CC mode, verified by NVIDIA NRAS
 - **CPU TEE attestation**: the CPU must be running in a verified hardware Trust Domain (Intel® TDX or AMD SEV-SNP)
 
-The ModelCar image (`quay.io/rh-ai-quickstart/deepseismic-model:v1`) is signed separately via cosign for supply chain integrity — to verify the encrypted artifact in the registry has not been tampered with — but this is independent of the KBS key release policy.
+The ModelCar image (`quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-deepseismic-model:v1`) is signed separately via cosign for supply chain integrity — to verify the encrypted artifact in the registry has not been tampered with — but this is independent of the KBS key release policy.
 
 **Expected outcome:**
 - ✓ `configmap/kbs-policy created`
@@ -359,9 +359,9 @@ helm install seismic-deeplearning ./helm \
 
 This deploys a single pod running inside a `kata-cc-nvidia-gpu` confidential container. On startup the pod:
 
-1. **Init container `init-attestation`**: the Attestation Agent measures the application container image digest (`deepseismic-app:v1`) inside the TEE, collects a CPU TEE quote (Intel TDX or AMD SEV-SNP) and an NVIDIA NRAS report, then sends the full evidence bundle to the Trustee stack. The **Attestation Service (AS)** verifies the evidence — checking the cosign signature on `deepseismic-app:v1`, calling NVIDIA NRAS to validate the GPU CC report, and calling Intel PCS or AMD to validate the CPU TEE quote. The **Key Broker Service (KBS)** then evaluates the OPA Rego policy against the AS's verified claims — if all three checks pass, the KBS returns the AES-256-GCM decryption key into the hardware Trust Domain.
+1. **Init container `init-attestation`**: the Attestation Agent measures the application container image digest (`conf-gpu-accel-seismic-interp-deepseismic-app:v1`) inside the TEE, collects a CPU TEE quote (Intel TDX or AMD SEV-SNP) and an NVIDIA NRAS report, then sends the full evidence bundle to the Trustee stack. The **Attestation Service (AS)** verifies the evidence — checking the cosign signature on `conf-gpu-accel-seismic-interp-deepseismic-app:v1`, calling NVIDIA NRAS to validate the GPU CC report, and calling Intel PCS or AMD to validate the CPU TEE quote. The **Key Broker Service (KBS)** then evaluates the OPA Rego policy against the AS's verified claims — if all three checks pass, the KBS returns the AES-256-GCM decryption key into the hardware Trust Domain.
 
-2. **Init container `init-model`**: pulls the encrypted ModelCar from `quay.io/rh-ai-quickstart/deepseismic-model:v1`, decrypts `hrnet.pth.enc` using the key received from the KBS, and writes the plaintext weights to `/models-cache`. Decryption runs entirely inside TEE-encrypted memory — the plaintext weights are never written to disk.
+2. **Init container `init-model`**: pulls the encrypted ModelCar from `quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-deepseismic-model:v1`, decrypts `hrnet.pth.enc` using the key received from the KBS, and writes the plaintext weights to `/models-cache`. Decryption runs entirely inside TEE-encrypted memory — the plaintext weights are never written to disk.
 
 3. **Application container**: loads the model from `/models-cache` and starts the Gradio UI on port 7860.
 
@@ -458,7 +458,7 @@ ALL ATTESTATION CHECKS PASSED — MODEL DECRYPTION KEY RECEIVED
 
 **Expected outcome — `init-model`:**
 ```
-Pulling quay.io/rh-ai-quickstart/deepseismic-model:v1 ...
+Pulling quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-deepseismic-model:v1 ...
 Decrypting hrnet.pth.enc → /models-cache/hrnet.pth (inside TEE-encrypted memory) ...
 Model ready.
 ```
@@ -492,11 +492,11 @@ This confirms two distinct confidential computing properties:
 
 1. **Memory isolation** — the CPU TEE (TDX or SEV-SNP) and NVIDIA CC mode encrypt the workload's memory. Even a privileged process on the host node cannot read the decrypted model weights or the uploaded seismic data from outside the Trust Domain.
 
-2. **Exec isolation** — the Kata agent exec-deny policy means no one — including cluster administrators — can inject a shell or additional process into the running container. The only code that runs inside the Trust Domain is the signed `deepseismic-app:v1` image that passed the KBS attestation check.
+2. **Exec isolation** — the Kata agent exec-deny policy means no one — including cluster administrators — can inject a shell or additional process into the running container. The only code that runs inside the Trust Domain is the signed `conf-gpu-accel-seismic-interp-deepseismic-app:v1` image that passed the KBS attestation check.
 
 ### Optional: Encrypt and publish your own model
 
-The quickstart uses a pre-encrypted, pre-signed ModelCar image at `quay.io/rh-ai-quickstart/deepseismic-model:v1`. This section shows how that image was produced, and how to publish your own — for example, to use a different model version, a different quay.io namespace, or your own KBS.
+The quickstart uses a pre-encrypted, pre-signed ModelCar image at `quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-deepseismic-model:v1`. This section shows how that image was produced, and how to publish your own — for example, to use a different model version, a different quay.io namespace, or your own KBS.
 
 This is not required to run the quickstart. The steps below are for model owners who want to publish a new encrypted ModelCar.
 
@@ -524,7 +524,7 @@ Edit the top of `Makefile` or pass variables on the command line:
 | Variable | Default | Description |
 |---|---|---|
 | `QUAY_ORG` | `rh-ai-quickstart` | quay.io organisation or user |
-| `QUAY_REPO` | `deepseismic-model` | Repository name |
+| `QUAY_REPO` | `conf-gpu-accel-seismic-interp-deepseismic-model` | Repository name |
 | `QUAY_TAG` | `v1` | Image tag |
 | `KBS_URL` | `http://kbs-service.trustee-system.svc.cluster.local:8080` | URL of the running KBS |
 | `KEY_ID` | `deepseismic/model-key` | Key identifier registered in the KBS |
@@ -546,7 +546,7 @@ make register-key      # POST the AES key + attestation policy to the KBS
 
 # Recommended: sign the ModelCar for supply chain integrity (requires cosign)
 # This does not affect KBS key release — the KBS checks the application
-# container signature (deepseismic-app:v1), not the ModelCar
+# container signature (conf-gpu-accel-seismic-interp-deepseismic-app:v1), not the ModelCar
 make generate-keys     # Generate a cosign key pair (run once)
 make sign-modelcar     # Sign the pushed ModelCar image with cosign
 ```
@@ -619,7 +619,7 @@ Update `helm/values.yaml` to point to your new image and key ID:
 
 ```yaml
 model:
-  image: quay.io/myorg/deepseismic-model:v1
+  image: quay.io/myorg/conf-gpu-accel-seismic-interp-deepseismic-model:v1
   keyId: deepseismic/model-key
 ```
 
@@ -630,7 +630,7 @@ Then re-run the deploy steps from [Step 4](#step-4-create-the-project) onwards.
 ### What you've accomplished
 
 **Deployed a fully attested confidential AI pipeline for geoscience:**
-- ✓ The model decryption key was released only after three independent attestation checks passed: the application container (`deepseismic-app:v1`) cosign signature verified by the model owner's key, NVIDIA CC mode confirmed on the H100, and CPU TEE verified (Intel® TDX or AMD SEV-SNP)
+- ✓ The model decryption key was released only after three independent attestation checks passed: the application container (`conf-gpu-accel-seismic-interp-deepseismic-app:v1`) cosign signature verified by the model owner's key, NVIDIA CC mode confirmed on the H100, and CPU TEE verified (Intel® TDX or AMD SEV-SNP)
 - ✓ The model weights were encrypted at rest in quay.io and decrypted only inside the hardware Trust Domain — never exposed on disk or in untrusted memory
 - ✓ Seismic data uploaded by the user was processed entirely within TEE-encrypted memory
 - ✓ Produced a full-field 3D rock type classification in minutes rather than weeks
