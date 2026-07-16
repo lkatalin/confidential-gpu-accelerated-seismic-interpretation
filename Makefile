@@ -1,7 +1,19 @@
 CONTAINER_TOOL ?= podman
 REGISTRY       ?= quay.io/rh-ai-quickstart
 QUAY_REPO      ?= conf-gpu-accel-seismic-interp-deepseismic-model
-QUAY_TAG       ?= v1
+
+BASE_VERSION           := 0.1.0
+MODEL_CAR_BASE_VERSION := 0.1.0
+GIT_BRANCH             := $(shell git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+
+ifeq ($(origin QUAY_TAG),undefined)
+  ifeq ($(GIT_BRANCH),main)
+    QUAY_TAG := $(MODEL_CAR_BASE_VERSION)
+  else
+    QUAY_TAG := $(MODEL_CAR_BASE_VERSION)-dev
+  endif
+endif
+
 MODEL_IMG      ?= $(REGISTRY)/$(QUAY_REPO):$(QUAY_TAG)
 COSIGN_KEY     ?= cosign.key
 
@@ -10,14 +22,10 @@ JOBSET_NAME    ?= deepseismic-dutchf3-training
 NUM_WORKERS    ?= 1
 EPOCHS             ?= 30
 BATCH_SIZE         ?= 8
-N_SLICES           ?= 3
-VOLVE_SEGY_LOCAL   ?=
 N_SAMPLES          ?= 15
 
 MAKEFLAGS += --no-print-directory
 
-DEEPSEISMIC_MODEL_URL   := https://deepseismicsharedstore.blob.core.windows.net/master-public-models/dutchf3_hrnet_patch_section_depth.pth
-DEEPSEISMIC_LICENSE_URL := https://raw.githubusercontent.com/microsoft/seismic-deeplearning/master/LICENSE
 
 define build_image
 	@echo "Building $(1)..."
@@ -40,19 +48,16 @@ help:
 	@echo "    training-status  - Show status of training pods and jobs"
 	@echo "    training-logs    - Follow logs from all training workers"
 	@echo "    delete-training  - Remove the JobSet and ConfigMap (keeps PVC/data)"
-	@echo "    get-model              - Copy dutchf3_unet_final.pth from PVC to local directory"
+	@echo "    training-cleanup - delete-training + delete PVC (full reset for a fresh training run)"
+	@echo "    get-model              - Copy dutchf3_unet_final.pth from PVC to ./model-creation/model-weights/"
 	@echo "    validate-model         - Run inference on Dutch F3 test sections, save PNGs to PVC"
 	@echo "    get-validation-results - Copy validation PNGs from PVC to local directory"
 	@echo "    extract-samples        - Extract N_SAMPLES inline slices from F3 data → ./samples/*.npy"
 	@echo "    run-inference          - Classify ./samples/*.npy on GPU, copy PNGs to ./results/"
-	@echo "    validate-volve         - Run inference on Volve SEG-Y data, copy PNGs to ./volve_validation/"
-	@echo "                            Requires: VOLVE_SEGY_LOCAL=/path/to/volve.segy NAMESPACE=..."
 	@echo ""
 	@echo "  Model Pipeline:"
-	@echo "    build-modelcar   - Download, encrypt, and build the ModelCar OCI image"
+	@echo "    build-modelcar   - AES-256-GCM encrypt the weights and build the ModelCar OCI image"
 	@echo "    push-modelcar    - Push the ModelCar image to the registry"
-	@echo "    download-model   - Download pre-trained HRNet-W48 checkpoint and LICENSE"
-	@echo "    encrypt-weights  - Encrypt hrnet.pth → hrnet.pth.enc"
 	@echo ""
 	@echo "  Signing (optional):"
 	@echo "    generate-keys    - Generate a cosign key pair (run once)"
@@ -68,50 +73,22 @@ help:
 	@echo "  CONTAINER_TOOL         - Container tool (default: podman)"
 	@echo "  REGISTRY               - Registry prefix (default: quay.io/rh-ai-quickstart)"
 	@echo "  QUAY_REPO              - Repository name (default: conf-gpu-accel-seismic-interp-deepseismic-model)"
-	@echo "  QUAY_TAG               - Image tag (default: v1)"
+	@echo "  QUAY_TAG               - ModelCar image tag (auto: $(MODEL_CAR_BASE_VERSION) on main, $(MODEL_CAR_BASE_VERSION)-dev elsewhere; override with QUAY_TAG=...)"
 	@echo "  MODEL_IMG              - Full image ref (default: \$${REGISTRY}/\$${QUAY_REPO}:\$${QUAY_TAG})"
-	@echo "  MODEL_ENCRYPTION_KEY   - AES-256-GCM key (required for build-modelcar, encrypt-weights)"
+	@echo "  MODEL_ENCRYPTION_KEY   - AES-256-GCM key (required for build-modelcar)"
 	@echo "  COSIGN_KEY             - Path to cosign private key (default: cosign.key)"
-	@echo "  N_SLICES               - Volve inline slices to validate (default: 3)"
-	@echo "  VOLVE_SEGY_LOCAL       - Local path to Volve SEG-Y file (required for validate-volve)"
 	@echo "  N_SAMPLES              - Inline slices to extract as sample inputs (default: 15)"
-
-.PHONY: download-model
-download-model:
-	@if [ ! -f hrnet.pth ]; then \
-		echo "Downloading pre-trained HRNet-W48 checkpoint (Dutch F3, ~310MB)..."; \
-		wget -O hrnet.pth $(DEEPSEISMIC_MODEL_URL) || (rm -f hrnet.pth; echo "Error: download failed"; exit 1); \
-		echo "Successfully downloaded hrnet.pth"; \
-	else \
-		echo "hrnet.pth already exists, skipping"; \
-	fi
-	@if [ ! -f LICENSE ]; then \
-		echo "Downloading MIT LICENSE from microsoft/seismic-deeplearning..."; \
-		wget -O LICENSE $(DEEPSEISMIC_LICENSE_URL); \
-		echo "Successfully downloaded LICENSE"; \
-	else \
-		echo "LICENSE already exists, skipping"; \
-	fi
-
-.PHONY: encrypt-weights
-encrypt-weights:
-	@[ -n "$$MODEL_ENCRYPTION_KEY" ] || (echo "Error: MODEL_ENCRYPTION_KEY is not set"; exit 1)
-	@[ -f hrnet.pth ] || (echo "Error: hrnet.pth not found — run 'make download-model' first"; exit 1)
-	@echo "Encrypting hrnet.pth → hrnet.pth.enc (AES-256-GCM)..."
-	@printf '%s' "$$MODEL_ENCRYPTION_KEY" > /tmp/model.key
-	@openssl enc -aes-256-gcm -pbkdf2 \
-		-in hrnet.pth \
-		-out hrnet.pth.enc \
-		-pass file:/tmp/model.key
-	@rm -f /tmp/model.key
-	@echo "Successfully wrote hrnet.pth.enc"
 
 .PHONY: build-modelcar
 build-modelcar:
 	@[ -n "$$MODEL_ENCRYPTION_KEY" ] || (echo "Error: MODEL_ENCRYPTION_KEY is not set"; exit 1)
-	$(MAKE) download-model
-	$(MAKE) encrypt-weights
-	$(call build_image,$(MODEL_IMG),Containerfile.modelcar)
+	@[ -f model-creation/model-weights/dutchf3_unet_final.pth ] || \
+		(echo "Error: model-creation/model-weights/dutchf3_unet_final.pth not found — run 'make get-model NAMESPACE=...' first"; exit 1)
+	@echo "Building $(MODEL_IMG) (encryption runs inside the build)..."
+	$(CONTAINER_TOOL) build -f Containerfile.modelcar \
+		--secret id=model_key,env=MODEL_ENCRYPTION_KEY \
+		-t $(MODEL_IMG) .
+	@echo "Successfully built $(MODEL_IMG)"
 
 .PHONY: push-modelcar
 push-modelcar:
@@ -121,12 +98,12 @@ push-modelcar:
 submit-training:
 	@[ -n "$$NAMESPACE" ] || (echo "Error: NAMESPACE is not set"; exit 1)
 	@echo "Submitting training job '$(JOBSET_NAME)' to namespace '$(NAMESPACE)'..."
-	oc apply -n $(NAMESPACE) -f training/pvc.yaml
+	oc apply -n $(NAMESPACE) -f model-creation/training/pvc.yaml
 	oc create configmap $(JOBSET_NAME)-script -n $(NAMESPACE) \
-		--from-file=train.py=training/train.py \
+		--from-file=train.py=model-creation/training/train.py \
 		--dry-run=client -o yaml | oc apply -n $(NAMESPACE) -f -
 	JOBSET_NAME=$(JOBSET_NAME) NUM_WORKERS=$(NUM_WORKERS) EPOCHS=$(EPOCHS) BATCH_SIZE=$(BATCH_SIZE) \
-		envsubst '$${JOBSET_NAME} $${NUM_WORKERS} $${EPOCHS} $${BATCH_SIZE}' < training/jobset.yaml | oc apply -n $(NAMESPACE) -f -
+		envsubst '$${JOBSET_NAME} $${NUM_WORKERS} $${EPOCHS} $${BATCH_SIZE}' < model-creation/training/jobset.yaml | oc apply -n $(NAMESPACE) -f -
 	@echo "Job submitted. Monitor with: make training-logs NAMESPACE=$(NAMESPACE)"
 
 .PHONY: training-status
@@ -142,7 +119,7 @@ training-logs:
 validate-model:
 	@echo "Submitting validation job to namespace '$(NAMESPACE)'..."
 	oc create configmap deepseismic-validate-script -n $(NAMESPACE) \
-		--from-file=validate.py=training/validate.py \
+		--from-file=validate.py=model-creation/training/validate.py \
 		--dry-run=client -o yaml | oc apply -n $(NAMESPACE) -f -
 	oc run deepseismic-validate -n $(NAMESPACE) --restart=Never \
 		--image=registry.redhat.io/rhoai/odh-training-cuda128-torch28-py312-rhel9:v3.0 \
@@ -174,24 +151,33 @@ get-validation-results:
 
 .PHONY: get-model
 get-model:
-	@echo "Copying dutchf3_unet_final.pth from PVC to local directory..."
+	@echo "Copying dutchf3_unet_final.pth from PVC to ./model-creation/model-weights/ ..."
+	@mkdir -p ./model-creation/model-weights
 	oc run model-copy -n $(NAMESPACE) --image=registry.access.redhat.com/ubi9/ubi:latest --restart=Never \
 		--overrides='{"spec":{"volumes":[{"name":"data","persistentVolumeClaim":{"claimName":"deepseismic-training-data"}}],"containers":[{"name":"model-copy","image":"registry.access.redhat.com/ubi9/ubi:latest","command":["sleep","120"],"volumeMounts":[{"name":"data","mountPath":"/data"}],"resources":{"requests":{"cpu":"100m","memory":"128Mi"}}}]}}'
 	oc wait pod/model-copy -n $(NAMESPACE) --for=condition=Ready --timeout=60s
-	oc cp $(NAMESPACE)/model-copy:/data/checkpoints/dutchf3_unet_final.pth ./dutchf3_unet_final.pth
+	oc exec -n $(NAMESPACE) model-copy -- tar cz -C /data/checkpoints dutchf3_unet_final.pth | tar xz -C ./model-creation/model-weights/
 	oc delete pod model-copy -n $(NAMESPACE)
-	@echo "Saved to ./dutchf3_unet_final.pth"
+	@echo "Saved to ./model-creation/model-weights/dutchf3_unet_final.pth"
 
 .PHONY: delete-training
 delete-training:
 	oc delete jobset $(JOBSET_NAME) -n $(NAMESPACE) --ignore-not-found
 	oc delete configmap $(JOBSET_NAME)-script -n $(NAMESPACE) --ignore-not-found
 
+.PHONY: training-cleanup
+training-cleanup: delete-training
+	oc delete pod model-copy deepseismic-validate deepseismic-extract \
+		deepseismic-inference inference-upload \
+		-n $(NAMESPACE) --ignore-not-found
+	oc delete pvc deepseismic-training-data -n $(NAMESPACE) --ignore-not-found
+	@echo "PVC deepseismic-training-data deleted — run 'make submit-training' to start fresh"
+
 .PHONY: extract-samples
 extract-samples:
 	@echo "Extracting $(N_SAMPLES) sample sections from F3 training data..."
 	oc create configmap deepseismic-extract-script -n $(NAMESPACE) \
-		--from-file=extract_samples.py=training/extract_samples.py \
+		--from-file=extract_samples.py=model-creation/training/extract_samples.py \
 		--dry-run=client -o yaml | oc apply -n $(NAMESPACE) -f -
 	oc run deepseismic-extract -n $(NAMESPACE) --restart=Never \
 		--image=registry.redhat.io/rhoai/odh-training-cuda128-torch28-py312-rhel9:v3.0 \
@@ -220,7 +206,7 @@ run-inference:
 	tar cz -C ./ samples | oc exec -i -n $(NAMESPACE) inference-upload -- tar xz -C /data/checkpoints/
 	oc delete pod inference-upload -n $(NAMESPACE)
 	oc create configmap deepseismic-inference-script -n $(NAMESPACE) \
-		--from-file=run_inference.py=training/run_inference.py \
+		--from-file=run_inference.py=model-creation/training/run_inference.py \
 		--dry-run=client -o yaml | oc apply -n $(NAMESPACE) -f -
 	oc run deepseismic-inference -n $(NAMESPACE) --restart=Never \
 		--image=registry.redhat.io/rhoai/odh-training-cuda128-torch28-py312-rhel9:v3.0 \
@@ -237,35 +223,6 @@ run-inference:
 	oc exec -n $(NAMESPACE) model-copy -- tar cz -C /data/checkpoints results | tar xz --strip-components=1 -C ./results/
 	oc delete pod model-copy -n $(NAMESPACE)
 	@echo "Classification results saved to ./results/"
-
-.PHONY: validate-volve
-validate-volve:
-	@[ -n "$(VOLVE_SEGY_LOCAL)" ] || (echo "Error: set VOLVE_SEGY_LOCAL=/path/to/volve.segy"; exit 1)
-	@echo "Uploading $(VOLVE_SEGY_LOCAL) → PVC:/data/volve_seismic.segy ..."
-	oc run volve-upload -n $(NAMESPACE) --image=registry.access.redhat.com/ubi9/ubi:latest --restart=Never \
-		--overrides='{"spec":{"volumes":[{"name":"data","persistentVolumeClaim":{"claimName":"deepseismic-training-data"}}],"containers":[{"name":"volve-upload","image":"registry.access.redhat.com/ubi9/ubi:latest","command":["sleep","600"],"volumeMounts":[{"name":"data","mountPath":"/data"}],"resources":{"requests":{"cpu":"100m","memory":"128Mi"}}}]}}'
-	oc wait pod/volve-upload -n $(NAMESPACE) --for=condition=Ready --timeout=60s
-	oc cp $(VOLVE_SEGY_LOCAL) $(NAMESPACE)/volve-upload:/data/volve_seismic.segy
-	oc delete pod volve-upload -n $(NAMESPACE)
-	@echo "Upload done. Running inference (N_SLICES=$(N_SLICES))..."
-	oc create configmap deepseismic-validate-volve-script -n $(NAMESPACE) \
-		--from-file=validate_volve.py=training/validate_volve.py \
-		--dry-run=client -o yaml | oc apply -n $(NAMESPACE) -f -
-	oc run deepseismic-validate-volve -n $(NAMESPACE) --restart=Never \
-		--image=registry.redhat.io/rhoai/odh-training-cuda128-torch28-py312-rhel9:v3.0 \
-		--overrides='{"spec":{"tolerations":[{"effect":"NoSchedule","key":"g5-gpu","operator":"Exists"}],"volumes":[{"name":"data","persistentVolumeClaim":{"claimName":"deepseismic-training-data"}},{"name":"script","configMap":{"name":"deepseismic-validate-volve-script"}}],"containers":[{"name":"validate","image":"registry.redhat.io/rhoai/odh-training-cuda128-torch28-py312-rhel9:v3.0","command":["/opt/app-root/bin/python3","/workspace/validate_volve.py"],"env":[{"name":"N_SLICES","value":"$(N_SLICES)"}],"volumeMounts":[{"name":"data","mountPath":"/data"},{"name":"script","mountPath":"/workspace"}],"resources":{"limits":{"cpu":"4","memory":"16Gi","nvidia.com/gpu":"1"},"requests":{"cpu":"4","memory":"16Gi","nvidia.com/gpu":"1"}}}]}}'
-	oc wait pod/deepseismic-validate-volve -n $(NAMESPACE) --for=condition=Ready --timeout=120s
-	oc logs -n $(NAMESPACE) deepseismic-validate-volve --follow
-	oc delete pod deepseismic-validate-volve -n $(NAMESPACE) --ignore-not-found
-	oc delete configmap deepseismic-validate-volve-script -n $(NAMESPACE) --ignore-not-found
-	@echo "Copying results to ./volve_validation/ ..."
-	oc run model-copy -n $(NAMESPACE) --image=registry.access.redhat.com/ubi9/ubi:latest --restart=Never \
-		--overrides='{"spec":{"volumes":[{"name":"data","persistentVolumeClaim":{"claimName":"deepseismic-training-data"}}],"containers":[{"name":"model-copy","image":"registry.access.redhat.com/ubi9/ubi:latest","command":["sleep","120"],"volumeMounts":[{"name":"data","mountPath":"/data"}],"resources":{"requests":{"cpu":"100m","memory":"128Mi"}}}]}}'
-	oc wait pod/model-copy -n $(NAMESPACE) --for=condition=Ready --timeout=60s
-	mkdir -p ./volve_validation
-	oc cp $(NAMESPACE)/model-copy:/data/volve_results/. ./volve_validation/
-	oc delete pod model-copy -n $(NAMESPACE)
-	@echo "Saved PNGs to ./volve_validation/"
 
 .PHONY: generate-keys
 generate-keys:

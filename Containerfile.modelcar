@@ -1,3 +1,23 @@
+# Stage 1 — encrypt the model weights inside the build environment.
+# The plaintext .pth and the key are never written into any image layer or build history.
+FROM registry.access.redhat.com/ubi9/ubi-minimal:latest AS encryptor
+
+RUN microdnf install -y openssl && microdnf clean all
+
+COPY model-creation/model-weights/dutchf3_unet_final.pth /tmp/model.pth
+
+# The secret is mounted as a tmpfs file for this RUN step only — not recorded in any layer.
+# AES-256-CBC: openssl enc dropped AEAD (GCM) support in OpenSSL 3.x.
+# Container-image digest provides the integrity guarantee that GCM's auth tag would add.
+RUN --mount=type=secret,id=model_key \
+    openssl enc -aes-256-cbc -pbkdf2 \
+        -in  /tmp/model.pth \
+        -out /tmp/model.pth.enc \
+        -pass file:/run/secrets/model_key && \
+    rm -f /tmp/model.pth
+
+# Stage 2 — scratch image containing only the encrypted artifact, licence, and model card.
 FROM scratch
-COPY hrnet.pth.enc /model/hrnet.pth.enc
+COPY --from=encryptor /tmp/model.pth.enc /model/dutchf3_unet_final.pth.enc
 COPY LICENSE /model/LICENSE
+COPY model-creation/model-weights/model-card.md /model/README.md
