@@ -1,6 +1,6 @@
-# Confidential GPU-Accelerated Seismic Interpretation with the Volve Open Dataset
+# Confidential GPU-Accelerated Seismic Interpretation
 
-AI-powered rock type classification from real North Sea field data — running with a three-factor attested, encrypted model in a confidential container on OpenShift AI. First result in approximately 10 minutes; full-field interpretation in under 45 minutes.
+AI-powered rock type classification from North Sea seismic data — running with a three-factor attested, encrypted model in a confidential container on OpenShift AI. Upload a `.npy` seismic section and receive a colour-coded facies classification in seconds.
 
 ## Table of contents
 
@@ -16,7 +16,6 @@ AI-powered rock type classification from real North Sea field data — running w
   - [Required user permissions](#required-user-permissions)
 - [Deploy](#deploy)
   - [Clone the repository](#clone-the-repository)
-  - [Download the Volve seismic data](#download-the-volve-seismic-data)
   - [Part 1: Platform setup (cluster-admin, once per cluster)](#part-1-platform-setup-cluster-admin-once-per-cluster)
     - [Step 1: Install operators](#step-1-install-operators)
     - [Step 2: Apply TEE node feature rules and Kata configuration](#step-2-apply-tee-node-feature-rules-and-kata-configuration)
@@ -29,7 +28,7 @@ AI-powered rock type classification from real North Sea field data — running w
   - [Use the application](#use-the-application)
     - [Upload seismic data](#upload-seismic-data)
     - [Run classification](#run-classification)
-    - [View and download results](#view-and-download-results)
+    - [View results](#view-results)
   - [Verify confidential execution (Optional)](#verify-confidential-execution-optional)
   - [Optional: Encrypt and publish your own model](#optional-encrypt-and-publish-your-own-model)
   - [What you've accomplished](#what-youve-accomplished)
@@ -70,39 +69,36 @@ AI-driven seismic facies classification changes this:
 
 **Why confidential computing matters here.** Seismic data is among the most commercially sensitive assets an oil and gas company owns. Running AI interpretation on proprietary field data in a shared cloud or on-premises cluster exposes that data to the underlying infrastructure. Confidential computing hardware encrypts the memory of the inference process — the seismic data and model weights are never visible to the host OS, hypervisor, or other tenants, even with physical access to the node. This quickstart uses Intel® TDX (Trust Domain Extensions) for CPU memory encryption, but the same pattern applies to AMD SEV-SNP on AMD EPYC platforms. The NVIDIA H100 extends this protection to the GPU: when running in Confidential Computing mode, GPU memory and the PCIe bus between CPU and GPU are also encrypted, closing the gap that would otherwise exist between the CPU Trust Domain and the accelerator.
 
-**Why an encrypted model matters.** The pre-trained DeepSeismic model is published to quay.io as an encrypted ModelCar OCI image. The AES-256-GCM decryption key is held by a Key Broker Server (KBS) that will only release it after three independent attestation checks pass: the **application container** (`quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-deepseismic-app:v1`) must be signed by the model owner — proving that the code receiving the key is trusted — the GPU must be confirmed to be running in NVIDIA Confidential Computing mode, and the CPU must be confirmed to be running in a hardware-verified Trust Domain (Intel® TDX or AMD SEV-SNP). The ModelCar image is signed separately to verify the integrity of the encrypted artifact in the registry. Together, this means the model weights are protected both at rest (encrypted in the registry) and in transit (decrypted only inside the hardware Trust Domain by a specific, verified application), and the inference workload cannot be redirected to an unattested or untrusted container.
+**Why an encrypted model matters.** The pre-trained U-Net ResNet-50 model is published to quay.io as an encrypted ModelCar OCI image. The AES-256-CBC decryption key is held by a Key Broker Server (KBS) that will only release it after three independent attestation checks pass: the **application container** (`quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-app:v1`) must be signed by the model owner — proving that the code receiving the key is trusted — the GPU must be confirmed to be running in NVIDIA Confidential Computing mode, and the CPU must be confirmed to be running in a hardware-verified Trust Domain (Intel® TDX or AMD SEV-SNP). The ModelCar image is signed separately to verify the integrity of the encrypted artifact in the registry. Together, this means the model weights are protected both at rest (encrypted in the registry) and in transit (decrypted only inside the hardware Trust Domain by a specific, verified application), and the inference workload cannot be redirected to an unattested or untrusted container.
 
 ### What this quickstart provides
 
 - ✓ A browser-based application for uploading, classifying, and visualising seismic data — no command line required
-- ✓ The pre-trained [Microsoft DeepSeismic](https://github.com/microsoft/seismic-deeplearning) model (MIT license — commercial use permitted), published as an AES-256-GCM encrypted ModelCar OCI image at `quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-deepseismic-model:v1`
+- ✓ A U-Net ResNet-50 model trained on the Dutch F3 benchmark dataset (MIT license — commercial use permitted), published as an AES-256-CBC encrypted ModelCar OCI image at `quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-model:v1`
 - ✓ A [Trustee](https://github.com/confidential-containers/trustee) Key Broker Server that enforces a three-factor attestation policy before releasing the model decryption key
 - ✓ Inference running inside a **Kata confidential container** backed by **Intel® TDX or AMD SEV-SNP** — seismic data and decrypted model weights protected in encrypted memory
 - ✓ GPU passthrough to the hardware Trust Domain via `kata-cc-nvidia-gpu` runtime
-- ✓ Step-by-step instructions for loading real Volve field seismic data (open dataset, Equinor)
-- ✓ Colour-coded facies cross-section displayed in the browser
-- ✓ Download of the raw facies classification volume (`.npy`) for use in external tools such as [OpendTect](https://dgbes.com/software/opendtect/)
+- ✓ Colour-coded facies cross-section displayed in the browser alongside the seismic input
 - ✓ A `make encrypt-model` target for publishing your own encrypted, signed ModelCar (see [Optional: Encrypt and publish your own model](#optional-encrypt-and-publish-your-own-model))
 
 ### What you'll build
 
 A containerised web application running on OpenShift that:
 
-1. Pulls an encrypted ModelCar OCI image from `quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-deepseismic-model:v1`
-2. Verifies a three-factor attestation policy via the Key Broker Server — the application container (`conf-gpu-accel-seismic-interp-deepseismic-app:v1`) must be cosign-signed by the model owner, the GPU must be in NVIDIA CC mode, and the CPU must be in a hardware TEE (Intel® TDX or AMD SEV-SNP) — and receives the AES-256-GCM decryption key only if all three pass
+1. Pulls an encrypted ModelCar OCI image from `quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-model:v1`
+2. Verifies a three-factor attestation policy via the Key Broker Server — the application container (`conf-gpu-accel-seismic-interp-app:v1`) must be cosign-signed by the model owner, the GPU must be in NVIDIA CC mode, and the CPU must be in a hardware TEE (Intel® TDX or AMD SEV-SNP) — and receives the AES-256-CBC decryption key only if all three pass
 3. Decrypts the model weights inside the hardware Trust Domain — in encrypted memory, never on disk in plaintext
-4. Presents a browser UI where a user uploads a Volve SEG-Y seismic file
-5. Runs Microsoft DeepSeismic inference on a GPU, classifying every point in the volume as one of six North Sea rock types
-6. Displays a colour-coded inline cross-section in the browser
-7. Offers the full 3D facies volume as a downloadable `.npy` file for further analysis
+4. Presents a browser UI where a user uploads a `.npy` seismic section (depth × crossline, float32)
+5. Runs U-Net ResNet-50 inference on a GPU, classifying every pixel as one of six North Sea rock types
+6. Displays a colour-coded facies classification alongside the seismic input in the browser
 
 #### Key technologies you'll learn
 
 **Data**
-- [Equinor Volve Open Dataset](https://www.equinor.com/energy/volve-data-sharing) — one of the most complete open petroleum datasets ever released, covering a full field lifecycle (2008–2016)
+- [Dutch F3 Benchmark Dataset](https://doi.org/10.5281/zenodo.3755060) — open North Sea seismic benchmark with six annotated facies classes (MIT license)
 
 **Model**
-- [Microsoft DeepSeismic](https://github.com/microsoft/seismic-deeplearning) — UNet / HRNet / SEResNET segmentation models pre-trained on Dutch F3 North Sea seismic data (MIT license)
+- U-Net ResNet-50 ([segmentation-models-pytorch](https://github.com/qubvel/segmentation_models.pytorch)) — trained on the Dutch F3 benchmark dataset for six-class seismic facies segmentation (MIT license)
 - [ModelCar](https://developers.redhat.com/articles/2024/10/22/how-to-use-modelcar-serve-ai-models-openshift-ai) — OCI image pattern for packaging and distributing model artifacts through a standard container registry
 
 **Confidential computing**
@@ -130,21 +126,21 @@ flowchart LR
     classDef rhBlack fill:#151515,stroke:#000000,stroke-width:2px,color:#FFFFFF;
     classDef rhOutline fill:#FFFFFF,stroke:#151515,stroke-width:2px,color:#151515;
 
-    Browser["User browser\nupload SEG-Y / view results / download .npy"]:::rhBlack
+    Browser["User browser\nupload .npy / view facies classification"]:::rhBlack
     Route["OpenShift Route HTTPS"]:::rhRed
     Browser -->|HTTPS| Route
 
     subgraph Quay["quay.io/rh-ai-quickstart  supply chain integrity"]
-        ModelCar["ModelCar OCI image\nhrnet.pth.enc\nAES-256-GCM encrypted"]:::rhOutline
+        ModelCar["ModelCar OCI image\ndutchf3_unet_final.pth.enc\nAES-256-CBC encrypted"]:::rhOutline
     end
 
     subgraph Trustee["Trustee"]
         direction TB
         subgraph AS["Attestation Service AS"]
-            ASVerify["Verifies evidence bundle\n• cosign sig on conf-gpu-accel-seismic-interp-deepseismic-app:v1\n• NVIDIA CC report\n• CPU TEE TD quote\nreturns verified claims"]:::default
+            ASVerify["Verifies evidence bundle\n• cosign sig on conf-gpu-accel-seismic-interp-app:v1\n• NVIDIA CC report\n• CPU TEE TD quote\nreturns verified claims"]:::default
         end
         subgraph KBS["Key Broker Service KBS"]
-            KBSPolicy["Evaluates OPA Rego policy\nagainst AS verified claims\nreleases AES-256-GCM key if all pass"]:::rhRed
+            KBSPolicy["Evaluates OPA Rego policy\nagainst AS verified claims\nreleases AES-256-CBC key if all pass"]:::rhRed
         end
         ASVerify -->|verified claims| KBSPolicy
     end
@@ -157,21 +153,18 @@ flowchart LR
     subgraph Pod["OpenShift Pod · kata-cc-nvidia-gpu"]
         direction TB
         subgraph Init1["init-attestation  init container 1"]
-            Agent["Attestation Agent\nCPU TEE quote TDX or SEV-SNP\nNVIDIA NRAS report H100 CC mode\nconf-gpu-accel-seismic-interp-deepseismic-app:v1 image digest + cosign sig"]:::default
+            Agent["Attestation Agent\nCPU TEE quote TDX or SEV-SNP\nNVIDIA NRAS report H100 CC mode\nconf-gpu-accel-seismic-interp-app:v1 image digest + cosign sig"]:::default
         end
         subgraph Init2["init-model  init container 2"]
             ModelPull["Pull encrypted ModelCar from quay.io\nDecrypt into TEE-encrypted memory\nMount at /models-cache"]:::default
         end
         subgraph CC["Kata Confidential Container · hardware Trust Domain · Encrypted Memory TDX or SEV-SNP"]
             Gradio["Gradio UI\nport 7860"]:::rhOutline
-            Convert["convert_segy.py\nSEG-Y to numpy subset"]:::rhOutline
-            DeepSeismic["DeepSeismic HRNet\nNVIDIA H100 CC mode\nGPU via PCI passthrough"]:::rhRed
-            Plot["Matplotlib inline plot"]:::rhOutline
-            NPY[".npy facies volume download"]:::rhOutline
+            UNet["U-Net ResNet-50\nNVIDIA H100 CC mode\nGPU via PCI passthrough"]:::rhRed
+            Plot["Matplotlib facies plot"]:::rhOutline
         end
         Init1 --> Init2 --> CC
-        Gradio --> Convert --> DeepSeismic --> Plot
-        DeepSeismic --> NPY
+        Gradio --> UNet --> Plot
     end
 
     Route --> Gradio
@@ -197,7 +190,7 @@ flowchart LR
 | GPU | NVIDIA H100 (80GB SXM or PCIe) | H100 required for NVIDIA CC mode and NRAS attestation. Consumer GPUs (RTX 3090, RTX 4090) do not support CC mode and cannot pass the NVIDIA attestation check. |
 | CPU | Intel® Xeon 5th Gen+ (Emerald Rapids) with TDX, or AMD EPYC 9004 series (Genoa) with SEV-SNP | TEE must be enabled in the BIOS. Earlier CPU generations may not support TDX or SEV-SNP. |
 | RAM | 64GB | |
-| Storage | 50GB | For ModelCar image cache and SEG-Y conversion workspace |
+| Storage | 50GB | For ModelCar image cache |
 
 **NOTE:** A CPU TEE (Intel® TDX or AMD SEV-SNP) and NVIDIA CC mode are **both** hard requirements — the Key Broker Server will not release the model decryption key unless all three attestation checks pass.
 
@@ -230,8 +223,6 @@ This quickstart separates one-time platform setup (done by a platform team) from
 | Create the `seismic-interpretation` project | `self-provisioner` |
 | Deploy the application, create secrets and routes | `edit` on the `seismic-interpretation` namespace |
 
-**Equinor Volve data:** Free registration at [equinor.com/energy/volve-data-sharing](https://www.equinor.com/energy/volve-data-sharing) — approval is automatic
-
 ---
 
 ## Deploy
@@ -239,19 +230,11 @@ This quickstart separates one-time platform setup (done by a platform team) from
 ### Clone the repository
 
 ```bash
-git clone https://github.com/rh-ai-quickstart/seismic-interpretation-volve
-cd seismic-interpretation-volve
+git clone https://github.com/rh-ai-quickstart/confidential-gpu-accelerated-seismic-interpretation
+cd confidential-gpu-accelerated-seismic-interpretation
 ```
 
-### Download the Volve seismic data
-
-1. Register and accept the Equinor Open Data Licence at [equinor.com/energy/volve-data-sharing](https://www.equinor.com/energy/volve-data-sharing)
-
-2. Download the seismic subset only — you do not need the full 5TB dataset:
-   - Navigate to: **Seismic data → ST10010ZC11_PZ_PSDM_KIRCH_FULL_T.MIG_FIN.POST_STACK.3D.JS-017534.segy**
-   - File size: approximately 20GB
-
-3. You will upload this file through the application UI — no S3 bucket or pre-loading required.
+Sample `.npy` seismic sections from the Dutch F3 dataset are included in the `samples/` directory of the repository — use these to try the application without any additional data download.
 
 ### Part 1: Platform setup (cluster-admin, once per cluster)
 
@@ -304,7 +287,7 @@ These steps require only `admin` access on the target namespaces and `self-provi
 
 #### Step 1: Deploy the Key Broker Server
 
-The Key Broker Server (KBS) holds the AES-256-GCM key used to encrypt the model weights and enforces the attestation policy. It must be running before the inference pod starts.
+The Key Broker Server (KBS) holds the AES-256-CBC key used to encrypt the model weights and enforces the attestation policy. It must be running before the inference pod starts.
 
 ```bash
 helm install trustee ./helm/trustee \
@@ -333,11 +316,11 @@ oc create configmap kbs-policy \
 ```
 
 The supplied `policy.rego` enforces:
-- **Application container signature**: the running application container (`quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-deepseismic-app:v1`) must be signed by the key in `cosign.pub` — the Attestation Agent measures the container image digest inside the TEE and includes it in the evidence bundle, proving the code requesting the key is the trusted application and not an arbitrary container
+- **Application container signature**: the running application container (`quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-app:v1`) must be signed by the key in `cosign.pub` — the Attestation Agent measures the container image digest inside the TEE and includes it in the evidence bundle, proving the code requesting the key is the trusted application and not an arbitrary container
 - **NVIDIA CC attestation**: the H100 must be running in CC mode, verified by NVIDIA NRAS
 - **CPU TEE attestation**: the CPU must be running in a verified hardware Trust Domain (Intel® TDX or AMD SEV-SNP)
 
-The ModelCar image (`quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-deepseismic-model:v1`) is signed separately via cosign for supply chain integrity — to verify the encrypted artifact in the registry has not been tampered with — but this is independent of the KBS key release policy.
+The ModelCar image (`quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-model:v1`) is signed separately via cosign for supply chain integrity — to verify the encrypted artifact in the registry has not been tampered with — but this is independent of the KBS key release policy.
 
 **Expected outcome:**
 - ✓ `configmap/kbs-policy created`
@@ -351,17 +334,14 @@ oc new-project seismic-interpretation
 #### Step 4: Deploy the application
 
 ```bash
-helm install seismic-deeplearning ./helm \
-  --namespace seismic-interpretation \
-  --set device=gpu \
-  --set kbs.url=http://kbs-service.trustee-system.svc.cluster.local:8080
+make install NAMESPACE=seismic-interpretation
 ```
 
 This deploys a single pod running inside a `kata-cc-nvidia-gpu` confidential container. On startup the pod:
 
-1. **Init container `init-attestation`**: the Attestation Agent measures the application container image digest (`conf-gpu-accel-seismic-interp-deepseismic-app:v1`) inside the TEE, collects a CPU TEE quote (Intel TDX or AMD SEV-SNP) and an NVIDIA NRAS report, then sends the full evidence bundle to the Trustee stack. The **Attestation Service (AS)** verifies the evidence — checking the cosign signature on `conf-gpu-accel-seismic-interp-deepseismic-app:v1`, calling NVIDIA NRAS to validate the GPU CC report, and calling Intel PCS or AMD to validate the CPU TEE quote. The **Key Broker Service (KBS)** then evaluates the OPA Rego policy against the AS's verified claims — if all three checks pass, the KBS returns the AES-256-GCM decryption key into the hardware Trust Domain.
+1. **Init container `init-attestation`**: the Attestation Agent measures the application container image digest (`conf-gpu-accel-seismic-interp-app:v1`) inside the TEE, collects a CPU TEE quote (Intel TDX or AMD SEV-SNP) and an NVIDIA NRAS report, then sends the full evidence bundle to the Trustee stack. The **Attestation Service (AS)** verifies the evidence — checking the cosign signature on `conf-gpu-accel-seismic-interp-app:v1`, calling NVIDIA NRAS to validate the GPU CC report, and calling Intel PCS or AMD to validate the CPU TEE quote. The **Key Broker Service (KBS)** then evaluates the OPA Rego policy against the AS's verified claims — if all three checks pass, the KBS returns the AES-256-CBC decryption key into the hardware Trust Domain.
 
-2. **Init container `init-model`**: pulls the encrypted ModelCar from `quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-deepseismic-model:v1`, decrypts `hrnet.pth.enc` using the key received from the KBS, and writes the plaintext weights to `/models-cache`. Decryption runs entirely inside TEE-encrypted memory — the plaintext weights are never written to disk.
+2. **Init container `init-model`**: pulls the encrypted ModelCar from `quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-model:v1`, decrypts `dutchf3_unet_final.pth.enc` using the key received from the KBS, and writes the plaintext weights to `/models-cache`. Decryption runs entirely inside TEE-encrypted memory — the plaintext weights are never written to disk.
 
 3. **Application container**: loads the model from `/models-cache` and starts the Gradio UI on port 7860.
 
@@ -374,7 +354,7 @@ oc get pods -n seismic-interpretation -w
 #### Step 5: Get the application URL
 
 ```bash
-oc get route seismic-deeplearning -n seismic-interpretation -o jsonpath='{.spec.host}'
+oc get route seismic-app -n seismic-interpretation -o jsonpath='{.spec.host}'
 ```
 
 Open the printed URL in your browser.
@@ -387,34 +367,28 @@ Open the printed URL in your browser.
 
 #### Upload seismic data
 
-1. On the Gradio UI home screen, click **Upload SEG-Y file**
-2. Select the Volve seismic file downloaded earlier:
-   `ST10010ZC11_PZ_PSDM_KIRCH_FULL_T.MIG_FIN.POST_STACK.3D.JS-017534.segy`
-3. Use the **Inline byte location** and **Crossline byte location** fields if needed — the defaults (189 / 193) are correct for the Volve dataset
-4. The **Volume extent** toggle defaults to **Central 50 inlines** — this reads only the 50 inlines at the centre of the field, giving a representative cross-section of the Volve reservoir in about 1–2 minutes. Select **Full volume** to process all inlines (~20GB, 10–20 minutes)
-5. Click **Convert**
+1. On the Gradio UI home screen, click the file upload area under **Seismic section (.npy)**
+2. Select a `.npy` file containing a 2D seismic section (shape: depth × crossline, float32). Sample files from the Dutch F3 dataset are provided in the `samples/` directory of the repository.
+3. Click **Submit**
 
 **Expected outcome:**
-- ✓ A progress bar shows conversion completing in approximately 1–2 minutes (central 50 inlines) or 10–20 minutes (full volume)
-- ✓ A summary appears showing the volume dimensions (inlines × crosslines × depth samples)
+- ✓ The results image appears below the buttons showing the seismic input alongside the predicted facies classification
 
 #### Run classification
 
-1. Click **Run AI Classification**
-2. The DeepSeismic model classifies every point in the converted volume on the H100
+The U-Net ResNet-50 model classifies every pixel in the uploaded section as one of six North Sea rock types. Classification runs on the H100 GPU and completes in seconds.
 
 **Expected outcome:**
-- ✓ GPU utilisation reaches 80–100% — visible in the status bar
-- ✓ Classification completes in approximately 15 seconds (central 50 inlines) or 1–2 minutes (full volume)
-- ✓ A success message confirms the facies volume has been produced
+- ✓ A side-by-side image is displayed: seismic input (greyscale) on the left, colour-coded facies prediction on the right
+- ✓ A legend below the image labels each colour with its formation name
 
-#### View and download results
+#### View results
 
-The results panel shows two outputs side by side:
+The output image shows two panels side by side:
 
-**Visualisation — inline cross-section**
+**Left — seismic input**: the uploaded section rendered in greyscale.
 
-A colour-coded cross-section through the centre of the Volve field, showing the AI-predicted rock type at every point:
+**Right — predicted facies**: each pixel coloured by predicted rock type:
 
 | Colour | Rock Type | Petroleum Significance |
 |---|---|---|
@@ -425,21 +399,14 @@ A colour-coded cross-section through the centre of the Volve field, showing the 
 | Purple | Scruff Group | Transition zone |
 | Brown | Zechstein Group | Deep salt — structural trap |
 
-Use the **Inline** slider to step through different cross-sections of the field.
-
-**Download — raw facies data**
-
-Click **Download facies volume (.npy)** to save the full 3D classification array. This file can be loaded into:
-
-- [OpendTect](https://dgbes.com/software/opendtect/) — free open source seismic viewer used by industry geoscientists — for full 3D interactive visualisation
-- Python / numpy for further analysis or integration into other workflows
+Click **Clear** to reset and upload a different section.
 
 ### Verify confidential execution (Optional)
 
 To confirm that all three attestation checks passed before inference ran, inspect the init container logs:
 
 ```bash
-POD=$(oc get pod -n seismic-interpretation -l app=seismic-deeplearning -o name)
+POD=$(oc get pod -n seismic-interpretation -l app.kubernetes.io/name=seismic-app -o name)
 
 # Check CPU TEE (Intel TDX or AMD SEV-SNP) and NVIDIA CC attestation, and KBS key release
 oc logs -n seismic-interpretation $POD -c init-attestation
@@ -458,8 +425,8 @@ ALL ATTESTATION CHECKS PASSED — MODEL DECRYPTION KEY RECEIVED
 
 **Expected outcome — `init-model`:**
 ```
-Pulling quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-deepseismic-model:v1 ...
-Decrypting hrnet.pth.enc → /models-cache/hrnet.pth (inside TEE-encrypted memory) ...
+Pulling quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-model:v1 ...
+Decrypting dutchf3_unet_final.pth.enc → /models-cache/ (inside TEE-encrypted memory) ...
 Model ready.
 ```
 
@@ -470,7 +437,7 @@ A key property of a confidential container is that even a cluster administrator 
 Try to open a shell in the running pod using the CLI:
 
 ```bash
-oc exec -n seismic-interpretation $POD -- /bin/sh
+oc exec -n seismic-interpretation $POD -c app -- /bin/sh
 ```
 
 **Expected outcome:**
@@ -492,118 +459,50 @@ This confirms two distinct confidential computing properties:
 
 1. **Memory isolation** — the CPU TEE (TDX or SEV-SNP) and NVIDIA CC mode encrypt the workload's memory. Even a privileged process on the host node cannot read the decrypted model weights or the uploaded seismic data from outside the Trust Domain.
 
-2. **Exec isolation** — the Kata agent exec-deny policy means no one — including cluster administrators — can inject a shell or additional process into the running container. The only code that runs inside the Trust Domain is the signed `conf-gpu-accel-seismic-interp-deepseismic-app:v1` image that passed the KBS attestation check.
+2. **Exec isolation** — the Kata agent exec-deny policy means no one — including cluster administrators — can inject a shell or additional process into the running container. The only code that runs inside the Trust Domain is the signed `conf-gpu-accel-seismic-interp-app:v1` image that passed the KBS attestation check.
 
 ### Optional: Encrypt and publish your own model
 
-The quickstart uses a pre-encrypted, pre-signed ModelCar image at `quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-deepseismic-model:v1`. This section shows how that image was produced, and how to publish your own — for example, to use a different model version, a different quay.io namespace, or your own KBS.
+The quickstart uses a pre-encrypted, pre-signed ModelCar image at `quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-model:v1`. This section shows how that image was produced, and how to publish your own — for example, after retraining on new data or to use a different quay.io namespace.
 
 This is not required to run the quickstart. The steps below are for model owners who want to publish a new encrypted ModelCar.
 
 **Prerequisites:**
 - `podman` or `docker`
-- `openssl`
-- Access to a running KBS instance (see Part 2, Step 1 of the Deploy section)
+- `MODEL_ENCRYPTION_KEY` set in your environment (the AES-256-CBC key used during training)
 - `podman login quay.io` authenticated
 - `cosign` 2.0+ *(recommended — for signing the ModelCar as a supply chain integrity measure; not required for the KBS key release mechanism, which checks the application container signature instead)*
-
-#### Overview
-
-```
-Download weights → Encrypt (AES-256-GCM) → Build ModelCar OCI image
-    → Push to quay.io → Register key with KBS
-    → Sign with cosign (recommended, supply chain integrity only)
-```
-
-All steps are wrapped in `make` targets. Set the variables for your environment, then run `make encrypt-model` to execute the full pipeline.
-
-#### Configuration
-
-Edit the top of `Makefile` or pass variables on the command line:
-
-| Variable | Default | Description |
-|---|---|---|
-| `QUAY_ORG` | `rh-ai-quickstart` | quay.io organisation or user |
-| `QUAY_REPO` | `conf-gpu-accel-seismic-interp-deepseismic-model` | Repository name |
-| `QUAY_TAG` | `v1` | Image tag |
-| `KBS_URL` | `http://kbs-service.trustee-system.svc.cluster.local:8080` | URL of the running KBS |
-| `KEY_ID` | `deepseismic/model-key` | Key identifier registered in the KBS |
-| `COSIGN_KEY` | `cosign.key` | Path to cosign private key for optional ModelCar signing (generated by `make generate-keys`) |
+- The trained weights at `model-creation/model-weights/dutchf3_unet_final.pth` — copy them from the training PVC first with `make get-model NAMESPACE=<your-namespace>`
 
 #### Make targets
 
 ```bash
-# Run the full pipeline: download → encrypt → build → push → register
-make encrypt-model QUAY_ORG=myorg
+# Encrypt weights inside the build and produce the ModelCar OCI image
+make build-modelcar MODEL_ENCRYPTION_KEY=$MODEL_ENCRYPTION_KEY
 
-# Run individual steps
-make download-model    # Download HRNet-W48 pretrained weights from Microsoft
-make generate-aes-key  # Generate a random AES-256-GCM key
-make encrypt-weights   # Encrypt hrnet.pth → hrnet.pth.enc
-make build-modelcar    # Build the ModelCar OCI image
-make push-modelcar     # Push to quay.io
-make register-key      # POST the AES key + attestation policy to the KBS
+# Push to quay.io
+make push-modelcar
+
+# Register the AES key and attestation policy with the KBS
+make register-key
 
 # Recommended: sign the ModelCar for supply chain integrity (requires cosign)
 # This does not affect KBS key release — the KBS checks the application
-# container signature (conf-gpu-accel-seismic-interp-deepseismic-app:v1), not the ModelCar
+# container signature (conf-gpu-accel-seismic-interp-app:v1), not the ModelCar
 make generate-keys     # Generate a cosign key pair (run once)
 make sign-modelcar     # Sign the pushed ModelCar image with cosign
 ```
 
 #### What each step does
 
-**`make download-model`**
-Downloads the pre-trained HRNet-W48 checkpoint from the Microsoft DeepSeismic release (~310MB). The original MIT licence file is included in the ModelCar image layer to satisfy the licence requirement.
-
-**`make generate-aes-key`**
-Generates a random 256-bit key and saves it to `model.key` (local, never committed). This key is registered with the KBS and used to encrypt the model weights.
-
-```bash
-openssl rand -hex 32 > model.key
-```
-
-**`make encrypt-weights`**
-Encrypts `hrnet.pth` using AES-256-GCM:
-
-```bash
-openssl enc -aes-256-gcm -pbkdf2 \
-  -in hrnet.pth \
-  -out hrnet.pth.enc \
-  -pass file:model.key
-```
-
 **`make build-modelcar`**
-Builds an OCI image containing only the encrypted weights and the MIT licence file — no Python runtime, no application code:
-
-```dockerfile
-FROM scratch
-COPY hrnet.pth.enc /model/hrnet.pth.enc
-COPY LICENSE /model/LICENSE
-```
-
-```bash
-podman build -f Containerfile.modelcar \
-  -t quay.io/${QUAY_ORG}/${QUAY_REPO}:${QUAY_TAG} .
-```
+Encrypts `dutchf3_unet_final.pth` with AES-256-CBC inside the container build (the key is passed as a build secret and never written to the image layer), then packages the encrypted weights into a minimal OCI image alongside the MIT licence file — no Python runtime, no application code.
 
 **`make push-modelcar`**
-Pushes the image to quay.io:
-
-```bash
-podman push quay.io/${QUAY_ORG}/${QUAY_REPO}:${QUAY_TAG}
-```
-
-**`make sign-modelcar`**
-Signs the pushed image with cosign. The KBS policy verifies this signature as attestation check (a):
-
-```bash
-cosign sign --key ${COSIGN_KEY} \
-  quay.io/${QUAY_ORG}/${QUAY_REPO}:${QUAY_TAG}
-```
+Pushes the image to quay.io.
 
 **`make register-key`**
-Registers the AES key with the KBS under the key ID, with the attestation policy attached. The KBS will only return this key to a caller that passes all three attestation checks:
+Registers the AES-256-CBC decryption key with the KBS under the key ID, with the attestation policy attached. The KBS will only return this key to a caller that passes all three attestation checks:
 
 ```bash
 curl -X POST ${KBS_URL}/kbs/v0/keys/${KEY_ID} \
@@ -613,27 +512,34 @@ curl -X POST ${KBS_URL}/kbs/v0/keys/${KEY_ID} \
 
 Where `key-registration.json` references the key material and the OPA Rego policy requiring CPU TEE (Intel® TDX or AMD SEV-SNP) + NVIDIA CC + cosign signature.
 
-#### After publishing
+**`make sign-modelcar`**
+Signs the pushed image with cosign for supply chain integrity:
 
-Update `helm/values.yaml` to point to your new image and key ID:
-
-```yaml
-model:
-  image: quay.io/myorg/conf-gpu-accel-seismic-interp-deepseismic-model:v1
-  keyId: deepseismic/model-key
+```bash
+cosign sign --key ${COSIGN_KEY} \
+  quay.io/${QUAY_ORG}/${QUAY_REPO}:${QUAY_TAG}
 ```
 
-Then re-run the deploy steps from [Step 4](#step-4-create-the-project) onwards.
+#### After publishing
+
+Update `helm/values.yaml` to point to your new image:
+
+```yaml
+modelcar:
+  image: quay.io/myorg/conf-gpu-accel-seismic-interp-model:v1
+```
+
+Then re-run the deploy steps from [Step 4](#step-4-deploy-the-application) onwards.
 
 ---
 
 ### What you've accomplished
 
 **Deployed a fully attested confidential AI pipeline for geoscience:**
-- ✓ The model decryption key was released only after three independent attestation checks passed: the application container (`conf-gpu-accel-seismic-interp-deepseismic-app:v1`) cosign signature verified by the model owner's key, NVIDIA CC mode confirmed on the H100, and CPU TEE verified (Intel® TDX or AMD SEV-SNP)
+- ✓ The model decryption key was released only after three independent attestation checks passed: the application container (`conf-gpu-accel-seismic-interp-app:v1`) cosign signature verified by the model owner's key, NVIDIA CC mode confirmed on the H100, and CPU TEE verified (Intel® TDX or AMD SEV-SNP)
 - ✓ The model weights were encrypted at rest in quay.io and decrypted only inside the hardware Trust Domain — never exposed on disk or in untrusted memory
 - ✓ Seismic data uploaded by the user was processed entirely within TEE-encrypted memory
-- ✓ Produced a full-field 3D rock type classification in minutes rather than weeks
+- ✓ Produced a rock type classification for a seismic section in seconds
 
 **Demonstrated GPU value on a real workload:**
 - ✓ Inference ran in approximately 1–2 minutes at 80–100% GPU utilisation on the H100 via PCI passthrough into the hardware Trust Domain
@@ -641,8 +547,8 @@ Then re-run the deploy steps from [Step 4](#step-4-create-the-project) onwards.
 
 **Connected AI output to business decisions:**
 - ✓ The facies output directly identifies reservoir, seal, and overburden rock — the key inputs to well placement decisions worth tens of millions of dollars per well
-- ✓ Results are immediately viewable in the browser and exportable to industry tools such as OpendTect
-- ✓ The same pipeline runs on any SEG-Y seismic dataset with no code changes
+- ✓ Results are immediately viewable in the browser
+- ✓ The same pipeline runs on any `.npy` seismic section with no code changes
 
 ### Delete
 
@@ -651,7 +557,7 @@ Then re-run the deploy steps from [Step 4](#step-4-create-the-project) onwards.
 Remove the application and the KBS — no cluster-admin required:
 
 ```bash
-helm uninstall seismic-deeplearning --namespace seismic-interpretation
+helm uninstall seismic-app --namespace seismic-interpretation
 oc delete project seismic-interpretation
 
 helm uninstall trustee --namespace trustee-system
@@ -672,16 +578,16 @@ oc delete -f helm/tdx-setup/tdx-kataconfig.yaml
 
 ## Tags
 
-* **Title:** GPU-Accelerated Seismic Interpretation with the Volve Open Dataset
+* **Title:** Confidential GPU-Accelerated Seismic Interpretation
 * **Product:** Red Hat OpenShift, OpenShift Sandboxed Containers
 * **Category:** Geoscience / Petroleum Engineering / Confidential Computing
 * **Use case:** Predictive modelling, seismic facies classification, confidential AI inference, encrypted model distribution
-* **Model:** Microsoft DeepSeismic (HRNet-W48) — MIT license — published as encrypted ModelCar OCI image
-* **Dataset:** Equinor Volve Open Dataset — Equinor Open Data Licence
+* **Model:** U-Net ResNet-50 (segmentation-models-pytorch) — MIT license — published as AES-256-CBC encrypted ModelCar OCI image
+* **Dataset:** Dutch F3 Benchmark Dataset — MIT license
 * **GPU:** NVIDIA H100 with CC mode and PCI passthrough into hardware Trust Domain
 * **Attestation:** Three-factor — CPU TEE (Intel® TDX or AMD SEV-SNP) + NVIDIA NRAS (GPU) + Cosign image signature
 * **Industry:** Energy / Oil & Gas
 * **Difficulty:** Intermediate
-* **Time to complete:** ~10 minutes to first result using the default central 50-inline subset; ~40 minutes for a full-volume interpretation
+* **Time to complete:** ~10 minutes to first result; classification of a single seismic section completes in seconds
 
 **Thank you for using the Seismic Interpretation Quickstart!**

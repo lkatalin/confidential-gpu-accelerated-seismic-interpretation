@@ -16,13 +16,24 @@ amplitude values from the original 3D volume.
 
 ## How these files were generated
 
+Training must have completed first so that the F3 dataset is present on the
+`deepseismic-training-data` PVC (it is downloaded there automatically during
+the training job).  To submit training:
+
+```bash
+make submit-training NAMESPACE=<your-namespace>
+make training-logs NAMESPACE=<your-namespace>   # follow progress
+```
+
+Once training is complete:
+
 ```bash
 make extract-samples NAMESPACE=<your-namespace> N_SAMPLES=20
 ```
 
-This runs `training/extract_samples.py` on the OpenShift cluster, which
-downloads the full dataset from Zenodo, extracts evenly-spaced inline slices,
-and copies the resulting `.npy` files here.
+This runs `training/extract_samples.py` on the OpenShift cluster against the
+training PVC, extracts evenly-spaced inline slices from the F3 volume, and
+copies the resulting `.npy` files here.
 
 ## Usage
 
