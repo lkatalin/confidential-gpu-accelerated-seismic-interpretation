@@ -15,7 +15,20 @@ ifeq ($(origin QUAY_TAG),undefined)
 endif
 
 MODEL_IMG      ?= $(REGISTRY)/$(QUAY_REPO):$(QUAY_TAG)
+
+APP_QUAY_REPO  ?= conf-gpu-accel-seismic-interp-deepseismic-app
+
+ifeq ($(origin APP_TAG),undefined)
+  ifeq ($(GIT_BRANCH),main)
+    APP_TAG := $(BASE_VERSION)
+  else
+    APP_TAG := $(BASE_VERSION)-dev
+  endif
+endif
+
+APP_IMG        ?= $(REGISTRY)/$(APP_QUAY_REPO):$(APP_TAG)
 COSIGN_KEY     ?= cosign.key
+RUNTIME_CLASS  ?= nvidia
 
 NAMESPACE      ?= default
 JOBSET_NAME    ?= deepseismic-dutchf3-training
@@ -56,12 +69,21 @@ help:
 	@echo "    run-inference          - Classify ./samples/*.npy on GPU, copy PNGs to ./results/"
 	@echo ""
 	@echo "  Model Pipeline:"
-	@echo "    build-modelcar   - AES-256-GCM encrypt the weights and build the ModelCar OCI image"
+	@echo "    build-modelcar   - AES-256-CBC encrypt the weights and build the ModelCar OCI image"
 	@echo "    push-modelcar    - Push the ModelCar image to the registry"
+	@echo ""
+	@echo "  Application:"
+	@echo "    build-app        - Build the Gradio application container image"
+	@echo "    push-app         - Push the application image to the registry"
+	@echo ""
+	@echo "  Deploy:"
+	@echo "    install          - Install the app to the cluster via Helm (requires NAMESPACE, MODEL_ENCRYPTION_KEY)"
+	@echo "    uninstall        - Uninstall the app from the cluster"
 	@echo ""
 	@echo "  Signing (optional):"
 	@echo "    generate-keys    - Generate a cosign key pair (run once)"
 	@echo "    sign-modelcar    - Sign the pushed ModelCar image with cosign"
+	@echo "    sign-app         - Sign the pushed application image with cosign"
 	@echo ""
 	@echo "Configuration (set via environment variables or make arguments):"
 	@echo ""
@@ -75,9 +97,12 @@ help:
 	@echo "  QUAY_REPO              - Repository name (default: conf-gpu-accel-seismic-interp-deepseismic-model)"
 	@echo "  QUAY_TAG               - ModelCar image tag (auto: $(MODEL_CAR_BASE_VERSION) on main, $(MODEL_CAR_BASE_VERSION)-dev elsewhere; override with QUAY_TAG=...)"
 	@echo "  MODEL_IMG              - Full image ref (default: \$${REGISTRY}/\$${QUAY_REPO}:\$${QUAY_TAG})"
-	@echo "  MODEL_ENCRYPTION_KEY   - AES-256-GCM key (required for build-modelcar)"
+	@echo "  MODEL_ENCRYPTION_KEY   - AES-256-CBC key (required for build-modelcar and install)"
 	@echo "  COSIGN_KEY             - Path to cosign private key (default: cosign.key)"
 	@echo "  N_SAMPLES              - Inline slices to extract as sample inputs (default: 15)"
+	@echo "  APP_QUAY_REPO          - App repository name (default: conf-gpu-accel-seismic-interp-deepseismic-app)"
+	@echo "  APP_TAG                - App image tag (auto: $(BASE_VERSION) on main, $(BASE_VERSION)-dev elsewhere)"
+	@echo "  APP_IMG                - Full app image ref (default: \$${REGISTRY}/\$${APP_QUAY_REPO}:\$${APP_TAG})"
 
 .PHONY: build-modelcar
 build-modelcar:
@@ -234,3 +259,36 @@ sign-modelcar:
 	@[ -f "$(COSIGN_KEY)" ] || (echo "Error: $(COSIGN_KEY) not found — run 'make generate-keys' first"; exit 1)
 	cosign sign --key $(COSIGN_KEY) $(MODEL_IMG)
 	@echo "Successfully signed $(MODEL_IMG)"
+
+.PHONY: build-app
+build-app:
+	@echo "Building $(APP_IMG) ..."
+	$(CONTAINER_TOOL) build -f Containerfile.app -t $(APP_IMG) .
+	@echo "Successfully built $(APP_IMG)"
+
+.PHONY: push-app
+push-app:
+	$(call push_image,$(APP_IMG))
+
+.PHONY: sign-app
+sign-app:
+	@[ -f "$(COSIGN_KEY)" ] || (echo "Error: $(COSIGN_KEY) not found — run 'make generate-keys' first"; exit 1)
+	cosign sign --key $(COSIGN_KEY) $(APP_IMG)
+	@echo "Successfully signed $(APP_IMG)"
+
+.PHONY: install
+install:
+	@[ -n "$$NAMESPACE" ] || (echo "Error: NAMESPACE is not set"; exit 1)
+	@[ -n "$$MODEL_ENCRYPTION_KEY" ] || (echo "Error: MODEL_ENCRYPTION_KEY is not set"; exit 1)
+	helm upgrade --install seismic-app helm/ \
+		-n $(NAMESPACE) \
+		--set app.image=$(APP_IMG) \
+		--set modelcar.image=$(MODEL_IMG) \
+		--set modelEncryptionKey="$$MODEL_ENCRYPTION_KEY" \
+		--set runtimeClassName=$(RUNTIME_CLASS)
+	@echo "Deployed. Get the URL with: oc get route seismic-app -n $(NAMESPACE)"
+
+.PHONY: uninstall
+uninstall:
+	helm uninstall seismic-app -n $(NAMESPACE) --ignore-not-found
+	@echo "seismic-app uninstalled from $(NAMESPACE)"

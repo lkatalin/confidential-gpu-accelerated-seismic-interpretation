@@ -1,0 +1,26 @@
+app:
+  image: quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-deepseismic-app:0.1.0
+
+modelcar:
+  image: quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-deepseismic-model:0.1.0
+
+# Pass at install time: --set modelEncryptionKey="$MODEL_ENCRYPTION_KEY"
+# Never commit a real key here.
+modelEncryptionKey: ""
+
+runtimeClassName: kata-cc-nvidia-gpu
+
+tolerations:
+  - key: g5-gpu
+    operator: Exists
+    effect: NoSchedule
+
+resources:
+  limits:
+    nvidia.com/gpu: "1"
+    cpu: "8"
+    memory: 24Gi
+  requests:
+    nvidia.com/gpu: "1"
+    cpu: "4"
+    memory: 16Gi

@@ -16,8 +16,11 @@ RUN --mount=type=secret,id=model_key \
         -pass file:/run/secrets/model_key && \
     rm -f /tmp/model.pth
 
-# Stage 2 — scratch image containing only the encrypted artifact, licence, and model card.
-FROM scratch
+# Stage 2 — minimal image containing only the encrypted artifact, licence, and model card.
+# ubi9-minimal (not scratch) so the image can be used as a Kubernetes init container;
+# cp is required to populate the shared /models-cache emptyDir volume.
+FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
 COPY --from=encryptor /tmp/model.pth.enc /model/dutchf3_unet_final.pth.enc
 COPY LICENSE /model/LICENSE
 COPY model-creation/model-weights/model-card.md /model/README.md
+CMD ["/bin/cp", "-r", "/model/.", "/models-cache/"]

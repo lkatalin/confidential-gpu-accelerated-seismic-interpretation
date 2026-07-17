@@ -1,0 +1,18 @@
+# Model weights — never commit plaintext weights to the repository.
+# Run 'make get-model NAMESPACE=<ns>' to populate this directory locally.
+model-creation/model-weights/*.pth
+model-creation/model-weights/*.pth.enc
+
+# Cosign private key
+cosign.key
+
+# Local results and validation artefacts
+results/
+volve_validation/
+*.png
+
+# Python / editor artefacts
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
