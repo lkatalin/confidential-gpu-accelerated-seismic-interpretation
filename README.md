@@ -483,9 +483,6 @@ make build-modelcar MODEL_ENCRYPTION_KEY=$MODEL_ENCRYPTION_KEY
 # Push to quay.io
 make push-modelcar
 
-# Register the AES key and attestation policy with the KBS
-make register-key
-
 # Recommended: sign the ModelCar for supply chain integrity (requires cosign)
 # This does not affect KBS key release — the KBS checks the application
 # container signature (conf-gpu-accel-seismic-interp-app:v1), not the ModelCar
@@ -500,17 +497,6 @@ Encrypts `dutchf3_unet_final.pth` with AES-256-CBC inside the container build (t
 
 **`make push-modelcar`**
 Pushes the image to quay.io.
-
-**`make register-key`**
-Registers the AES-256-CBC decryption key with the KBS under the key ID, with the attestation policy attached. The KBS will only return this key to a caller that passes all three attestation checks:
-
-```bash
-curl -X POST ${KBS_URL}/kbs/v0/keys/${KEY_ID} \
-  -H "Content-Type: application/json" \
-  -d @helm/trustee/key-registration.json
-```
-
-Where `key-registration.json` references the key material and the OPA Rego policy requiring CPU TEE (Intel® TDX or AMD SEV-SNP) + NVIDIA CC + cosign signature.
 
 **`make sign-modelcar`**
 Signs the pushed image with cosign for supply chain integrity:
