@@ -418,6 +418,14 @@ setup-trustee-in-cluster:
 	    echo "kbs-auth-public-key Secret created."; \
 	fi; \
 	\
+	echo "=== Step 3b: cert-manager Issuer and TLS Certificates ==="; \
+	if oc get secret trustee-tls-cert -n trustee-operator-system \
+	        --ignore-not-found 2>/dev/null | grep -q .; then \
+	    echo "WARNING: trustee-tls-cert Secret already exists, skipping cert creation."; \
+	else \
+	    bash scripts/apply-kbs-certs.sh; \
+	fi; \
+	\
 	echo "=== Step 4: TrusteeConfig and KBS route ==="; \
 	if oc get trusteeconfig -n trustee-operator-system \
 	        --ignore-not-found 2>/dev/null | grep -q .; then \

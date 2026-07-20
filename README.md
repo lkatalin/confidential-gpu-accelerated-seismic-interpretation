@@ -21,6 +21,7 @@ AI-powered rock type classification from North Sea seismic data — running with
     - [Step 2: Install OpenShift Sandboxed Containers](#step-2-install-openshift-sandboxed-containers)
     - [Step 3: Install the Trustee operator](#step-3-install-the-trustee-operator)
     - [Step 3a: Create the kbs-auth-public-key Secret](#step-3a-create-the-kbs-auth-public-key-secret)
+    - [Step 3b: Create the trustee-tls-cert Secret](#step-3b-create-the-trustee-tls-cert-secret)
     - [Step 4: Deploy KBS](#step-4-deploy-kbs)
     - [Step 5: Expose the KBS route](#step-5-expose-the-kbs-route)
     - [Step 6: Configure the attestation policy](#step-6-configure-the-attestation-policy)
@@ -340,6 +341,20 @@ rm /tmp/kbs-private.pem /tmp/kbs-public.pem
 ```
 
 The private key is discarded immediately — KBS only needs the public key to verify client attestation tokens.
+
+#### Step 3b: Create the cert-manager Issuer and TLS Certificates
+
+The Trustee operator requires `trustee-tls-cert` and `trustee-token-cert` Secrets to exist before it will deploy KBS. These are issued by cert-manager in response to `Issuer` and `Certificate` resources that must be created before `TrusteeConfig` is applied.
+
+Run the script from the repository root — it detects the cluster app domain automatically:
+
+```bash
+bash scripts/apply-kbs-certs.sh
+```
+
+The script creates a self-signed `Issuer`, an RSA `Certificate` for KBS HTTPS (stored as `trustee-tls-cert`), and an ECDSA `Certificate` for attestation token verification (stored as `trustee-token-cert`), then waits for cert-manager to issue both.
+
+The `trustee-tls-cert` certificate is also embedded in the initdata blob by `make install` — the Confidential Data Hub inside the kata VM uses it to verify the KBS TLS connection.
 
 #### Step 4: Deploy KBS
 
