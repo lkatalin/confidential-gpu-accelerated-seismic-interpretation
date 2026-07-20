@@ -1,0 +1,17 @@
+# TrusteeConfig auto-creates a KbsConfig named trusteeconfig-kbs-config.
+# This template updates it to reference the OPA policy and RVPS ConfigMaps.
+# kbsSecretResources is omitted — app secrets are registered via KBS REST API
+# by make setup-attestation, not as Kubernetes Secrets.
+apiVersion: confidentialcontainers.org/v1alpha1
+kind: KbsConfig
+metadata:
+  name: trusteeconfig-kbs-config
+  namespace: trustee-operator-system
+spec:
+  kbsDeploymentType: AllInOneDeployment
+  kbsServiceType: ClusterIP
+  kbsHttpsKeySecretName: trustee-tls-cert
+  kbsHttpsCertSecretName: trustee-tls-cert
+  kbsAuthSecretName: kbs-auth-public-key
+  kbsAttestationPolicyConfigMapName: conf-seismic-attestation-policy
+  kbsRvpsRefValuesConfigMapName: conf-seismic-rvps-reference-values

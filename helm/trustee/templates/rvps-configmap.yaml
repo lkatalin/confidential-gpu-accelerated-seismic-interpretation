@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: conf-seismic-rvps-reference-values
+  namespace: trustee-operator-system
+data:
+  reference-values.json: "[]"

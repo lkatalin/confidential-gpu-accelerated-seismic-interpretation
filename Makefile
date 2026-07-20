@@ -27,8 +27,13 @@ ifeq ($(origin APP_TAG),undefined)
 endif
 
 APP_IMG        ?= $(REGISTRY)/$(APP_QUAY_REPO):$(APP_TAG)
-COSIGN_KEY     ?= cosign.key
-RUNTIME_CLASS  ?= nvidia
+COSIGN_KEY          ?= cosign.key
+RUNTIME_CLASS       ?= nvidia
+KATA_RUNTIME_CLASS  ?= kata-cc-nvidia-gpu
+APP_IMAGE_REPO       = $(shell echo $(APP_IMG) | cut -d: -f1)
+KBS_URL             ?= https://$(shell oc get route kbs-service \
+                          -n trustee-operator-system \
+                          -o jsonpath='{.spec.host}' 2>/dev/null)
 
 NAMESPACE      ?= default
 JOBSET_NAME    ?= deepseismic-dutchf3-training
@@ -76,8 +81,14 @@ help:
 	@echo "    build-app        - Build the Gradio application container image"
 	@echo "    push-app         - Push the application image to the registry"
 	@echo ""
+	@echo "  Attestation (cluster-admin, run once per cluster before install):"
+	@echo "    setup-trustee-in-cluster - Install NFD, OSC (kata), and Trustee KBS on the cluster"
+	@echo "    setup-attestation        - Register model key, cosign key, and image policy with KBS"
+	@echo "                               (requires NAMESPACE, MODEL_ENCRYPTION_KEY, cosign.pub)"
+	@echo ""
 	@echo "  Deploy:"
-	@echo "    install          - Install the app to the cluster via Helm (requires NAMESPACE, MODEL_ENCRYPTION_KEY)"
+	@echo "    install          - Install the app to the cluster via Helm (requires NAMESPACE;"
+	@echo "                       fetches KBS cert from cluster and builds initdata blob automatically)"
 	@echo "    uninstall        - Uninstall the app from the cluster"
 	@echo ""
 	@echo "  Signing (optional):"
@@ -87,7 +98,7 @@ help:
 	@echo ""
 	@echo "Configuration (set via environment variables or make arguments):"
 	@echo ""
-	@echo "  NAMESPACE              - OpenShift namespace for training (default: default)"
+	@echo "  NAMESPACE              - OpenShift namespace for training and app deployment (default: default)"
 	@echo "  JOBSET_NAME            - Name of the training JobSet (default: deepseismic-dutchf3-training)"
 	@echo "  NUM_WORKERS            - Number of distributed training workers (default: 2)"
 	@echo "  EPOCHS                 - Training epochs (default: 30)"
@@ -97,7 +108,9 @@ help:
 	@echo "  QUAY_REPO              - Repository name (default: conf-gpu-accel-seismic-interp-deepseismic-model)"
 	@echo "  QUAY_TAG               - ModelCar image tag (auto: $(MODEL_CAR_BASE_VERSION) on main, $(MODEL_CAR_BASE_VERSION)-dev elsewhere; override with QUAY_TAG=...)"
 	@echo "  MODEL_IMG              - Full image ref (default: \$${REGISTRY}/\$${QUAY_REPO}:\$${QUAY_TAG})"
-	@echo "  MODEL_ENCRYPTION_KEY   - AES-256-CBC key (required for build-modelcar and install)"
+	@echo "  MODEL_ENCRYPTION_KEY   - AES-256-CBC key (required for build-modelcar and setup-attestation)"
+	@echo "  KATA_RUNTIME_CLASS     - kata runtimeClass for install (default: kata-cc-nvidia-gpu)"
+	@echo "  KBS_URL                - KBS route URL for setup-attestation (default: auto-detected from cluster)"
 	@echo "  COSIGN_KEY             - Path to cosign private key (default: cosign.key)"
 	@echo "  N_SAMPLES              - Inline slices to extract as sample inputs (default: 15)"
 	@echo "  APP_QUAY_REPO          - App repository name (default: conf-gpu-accel-seismic-interp-deepseismic-app)"
@@ -279,16 +292,221 @@ sign-app:
 .PHONY: install
 install:
 	@[ -n "$$NAMESPACE" ] || (echo "Error: NAMESPACE is not set"; exit 1)
-	@[ -n "$$MODEL_ENCRYPTION_KEY" ] || (echo "Error: MODEL_ENCRYPTION_KEY is not set"; exit 1)
+	@set -e; \
+	KBS_ROUTE=$$(oc get route kbs-service -n trustee-operator-system \
+	    -o jsonpath='{.spec.host}' 2>/dev/null); \
+	[ -n "$$KBS_ROUTE" ] || { \
+	    echo "Error: KBS route not found — run make setup-trustee-in-cluster first"; exit 1; \
+	}; \
+	echo "Building initdata blob (KBS URL: https://$$KBS_ROUTE)..."; \
+	INITDATA=$$(oc get secret trustee-tls-cert -n trustee-operator-system \
+	    -o jsonpath='{.data.tls\.crt}' | base64 -d \
+	    | python3 scripts/build-initdata.py "https://$$KBS_ROUTE" "$(NAMESPACE)"); \
 	helm upgrade --install seismic-app helm/ \
-		-n $(NAMESPACE) \
-		--set app.image=$(APP_IMG) \
-		--set modelcar.image=$(MODEL_IMG) \
-		--set modelEncryptionKey="$$MODEL_ENCRYPTION_KEY" \
-		--set runtimeClassName=$(RUNTIME_CLASS)
+	    -n $(NAMESPACE) \
+	    --set app.image=$(APP_IMG) \
+	    --set modelcar.image=$(MODEL_IMG) \
+	    --set runtimeClassName=$(KATA_RUNTIME_CLASS) \
+	    --set-string initdata="$$INITDATA"
 	@echo "Deployed. Get the URL with: oc get route seismic-app -n $(NAMESPACE)"
 
 .PHONY: uninstall
 uninstall:
 	helm uninstall seismic-app -n $(NAMESPACE) --ignore-not-found
 	@echo "seismic-app uninstalled from $(NAMESPACE)"
+
+.PHONY: setup-trustee-in-cluster
+setup-trustee-in-cluster:
+	@set -e; \
+	echo "=== Pre-flight: checking NVIDIA GPU Operator ==="; \
+	if ! oc get csv -n nvidia-gpu-operator 2>/dev/null \
+	        | grep -q "gpu-operator.*Succeeded"; then \
+	    echo "ERROR: NVIDIA GPU Operator not found (namespace: nvidia-gpu-operator)."; \
+	    echo "       Install it via OperatorHub before running this target."; \
+	    exit 1; \
+	fi; \
+	echo "GPU Operator: OK"; \
+	\
+	echo "=== Step 1: Node Feature Discovery ==="; \
+	if oc get csv -n openshift-nfd 2>/dev/null \
+	        | grep -q "nfd.*Succeeded"; then \
+	    echo "WARNING: NFD operator already installed, skipping."; \
+	else \
+	    echo "Installing Node Feature Discovery operator..."; \
+	    oc apply -f helm/osc/templates/nfd-namespace.yaml; \
+	    oc apply -f helm/osc/templates/nfd-operatorgroup.yaml; \
+	    oc apply -f helm/osc/templates/nfd-subscription.yaml; \
+	    until oc get csv -n openshift-nfd 2>/dev/null \
+	            | grep -q "nfd.*Succeeded"; do sleep 10; done; \
+	    echo "NFD operator ready."; \
+	fi; \
+	if oc get nodefeaturediscovery -n openshift-nfd \
+	        --ignore-not-found 2>/dev/null | grep -q .; then \
+	    echo "WARNING: NodeFeatureDiscovery CR already exists, skipping."; \
+	else \
+	    oc apply -f helm/osc/templates/nfd-instance.yaml; \
+	fi; \
+	\
+	echo "=== Step 2: OpenShift Sandboxed Containers ==="; \
+	if oc get csv -n openshift-sandboxed-containers-operator 2>/dev/null \
+	        | grep -q "sandboxed-containers.*Succeeded"; then \
+	    echo "WARNING: OSC operator already installed, skipping."; \
+	else \
+	    echo "Installing OpenShift Sandboxed Containers operator..."; \
+	    oc apply -f helm/osc/templates/osc-namespace.yaml; \
+	    oc apply -f helm/osc/templates/osc-operatorgroup.yaml; \
+	    oc apply -f helm/osc/templates/osc-subscription.yaml; \
+	    until oc get installplan -n openshift-sandboxed-containers-operator \
+	            --ignore-not-found 2>/dev/null | grep -q .; do sleep 5; done; \
+	    INSTALL_PLAN=$$(oc get installplan \
+	        -n openshift-sandboxed-containers-operator \
+	        -o jsonpath='{.items[0].metadata.name}'); \
+	    oc patch installplan $$INSTALL_PLAN \
+	        -n openshift-sandboxed-containers-operator \
+	        --type merge --patch '{"spec":{"approved":true}}'; \
+	    until oc get csv -n openshift-sandboxed-containers-operator 2>/dev/null \
+	            | grep -q "sandboxed-containers.*Succeeded"; do sleep 10; done; \
+	    echo "OSC operator ready."; \
+	fi; \
+	if oc get configmap osc-feature-gates \
+	        -n openshift-sandboxed-containers-operator \
+	        --ignore-not-found 2>/dev/null | grep -q .; then \
+	    echo "WARNING: osc-feature-gates ConfigMap already exists, skipping."; \
+	    echo "         If confidential mode is not enabled, this must be resolved manually."; \
+	else \
+	    oc apply -f helm/osc/templates/01-osc-feature-gates.yaml; \
+	fi; \
+	if oc get kataconfig --ignore-not-found 2>/dev/null | grep -q .; then \
+	    echo "WARNING: KataConfig already exists, skipping. No node reboots will be triggered."; \
+	else \
+	    echo "WARNING: Creating KataConfig — nodes will reboot in sequence."; \
+	    oc apply -f helm/osc/templates/kataconfig.yaml; \
+	fi; \
+	\
+	echo "=== Step 3: Trustee operator ==="; \
+	if oc get csv -n trustee-operator-system 2>/dev/null \
+	        | grep -q "trustee-operator.*Succeeded"; then \
+	    echo "WARNING: Trustee operator already installed, skipping."; \
+	else \
+	    echo "Installing Trustee operator..."; \
+	    oc apply -f helm/trustee/templates/trustee-namespace.yaml; \
+	    oc apply -f helm/trustee/templates/trustee-operatorgroup.yaml; \
+	    oc apply -f helm/trustee/templates/trustee-subscription.yaml; \
+	    until oc get installplan -n trustee-operator-system \
+	            --ignore-not-found 2>/dev/null | grep -q .; do sleep 5; done; \
+	    INSTALL_PLAN=$$(oc get installplan -n trustee-operator-system \
+	        -o jsonpath='{.items[0].metadata.name}'); \
+	    oc patch installplan $$INSTALL_PLAN -n trustee-operator-system \
+	        --type merge --patch '{"spec":{"approved":true}}'; \
+	    until oc get csv -n trustee-operator-system 2>/dev/null \
+	            | grep -q "trustee-operator.*Succeeded"; do sleep 10; done; \
+	    echo "Trustee operator ready."; \
+	fi; \
+	\
+	echo "=== Step 3a: kbs-auth-public-key Secret ==="; \
+	if oc get secret kbs-auth-public-key -n trustee-operator-system \
+	        --ignore-not-found 2>/dev/null | grep -q .; then \
+	    echo "WARNING: kbs-auth-public-key Secret already exists, skipping."; \
+	else \
+	    echo "Generating kbs-auth-public-key (Ed25519)..."; \
+	    openssl genpkey -algorithm ed25519 -out /tmp/kbs-private.pem; \
+	    openssl pkey -in /tmp/kbs-private.pem -pubout -out /tmp/kbs-public.pem; \
+	    oc create secret generic kbs-auth-public-key \
+	        -n trustee-operator-system \
+	        --from-file=publicKey=/tmp/kbs-public.pem; \
+	    rm -f /tmp/kbs-private.pem /tmp/kbs-public.pem; \
+	    echo "kbs-auth-public-key Secret created."; \
+	fi; \
+	\
+	echo "=== Step 4: TrusteeConfig and KBS route ==="; \
+	if oc get trusteeconfig -n trustee-operator-system \
+	        --ignore-not-found 2>/dev/null | grep -q .; then \
+	    echo "WARNING: TrusteeConfig already exists — KBS already deployed, skipping."; \
+	else \
+	    oc apply -f helm/trustee/templates/trustee-config.yaml; \
+	    oc apply -f helm/trustee/templates/kbs-route.yaml; \
+	    oc rollout status deployment/trustee-deployment \
+	        -n trustee-operator-system --timeout=5m; \
+	fi; \
+	\
+	echo "=== Step 5: Attestation policy ConfigMaps and KbsConfig ==="; \
+	if oc get configmap conf-seismic-attestation-policy \
+	        -n trustee-operator-system --ignore-not-found 2>/dev/null | grep -q .; then \
+	    echo "WARNING: Attestation policy ConfigMap already exists, skipping."; \
+	else \
+	    oc apply -f helm/trustee/templates/attestation-policy-configmap.yaml; \
+	fi; \
+	if oc get configmap conf-seismic-rvps-reference-values \
+	        -n trustee-operator-system --ignore-not-found 2>/dev/null | grep -q .; then \
+	    echo "WARNING: RVPS reference values ConfigMap already exists, skipping."; \
+	else \
+	    oc apply -f helm/trustee/templates/rvps-configmap.yaml; \
+	fi; \
+	if oc get kbsconfig trusteeconfig-kbs-config -n trustee-operator-system \
+	        -o jsonpath='{.spec.kbsAttestationPolicyConfigMapName}' 2>/dev/null \
+	        | grep -q "conf-seismic"; then \
+	    echo "WARNING: KbsConfig already references conf-seismic policy, skipping."; \
+	else \
+	    oc apply -f helm/trustee/templates/kbs-config.yaml; \
+	    oc rollout status deployment/trustee-deployment \
+	        -n trustee-operator-system --timeout=5m; \
+	fi; \
+	echo "KBS route: $$(oc get route kbs-service \
+	    -n trustee-operator-system -o jsonpath='{.spec.host}')"; \
+	\
+	echo "=== Step 6: Wait for MachineConfigPool rollout and kata runtimeClasses ==="; \
+	echo "Waiting for MachineConfigPool rollout (up to 30 min)..."; \
+	DEADLINE=$$(( $$(date +%s) + 1800 )); \
+	while [ $$(date +%s) -lt $$DEADLINE ]; do \
+	    if oc get mcp kata-oc --no-headers 2>/dev/null \
+	            | awk '{print $$3,$$4,$$5}' | grep -q "True False False"; then \
+	        echo "MachineConfigPool kata-oc is updated."; break; \
+	    fi; \
+	    if oc get mcp master --no-headers 2>/dev/null \
+	            | awk '{print $$3,$$4,$$5}' | grep -q "True False False"; then \
+	        echo "MachineConfigPool master is updated."; break; \
+	    fi; \
+	    sleep 30; \
+	done; \
+	if [ $$(date +%s) -ge $$DEADLINE ]; then \
+	    echo "ERROR: MachineConfigPool did not complete in 30 min."; \
+	    echo "       Run: oc get mcp && oc get nodes"; \
+	    exit 1; \
+	fi; \
+	echo "Waiting for kata-cc runtimeClass (up to 15 min)..."; \
+	DEADLINE=$$(( $$(date +%s) + 900 )); \
+	until oc get runtimeclass kata-cc 2>/dev/null; do \
+	    if [ $$(date +%s) -ge $$DEADLINE ]; then \
+	        echo "ERROR: kata-cc runtimeClass not found after 15 min."; exit 1; \
+	    fi; \
+	    sleep 30; \
+	done; \
+	echo "Waiting for kata-cc-nvidia-gpu runtimeClass (up to 15 min)..."; \
+	DEADLINE=$$(( $$(date +%s) + 900 )); \
+	until oc get runtimeclass kata-cc-nvidia-gpu 2>/dev/null; do \
+	    if [ $$(date +%s) -ge $$DEADLINE ]; then \
+	        echo "ERROR: kata-cc-nvidia-gpu not found after 15 min."; \
+	        echo "       Verify GPU Operator ClusterPolicy is healthy."; exit 1; \
+	    fi; \
+	    sleep 30; \
+	done; \
+	echo "kata-cc-nvidia-gpu runtimeClass is ready."; \
+	echo "=== setup-trustee-in-cluster complete ==="
+
+.PHONY: setup-attestation
+setup-attestation:
+	@[ -n "$$NAMESPACE" ] || (echo "Error: NAMESPACE is not set"; exit 1)
+	@[ -n "$$MODEL_ENCRYPTION_KEY" ] || (echo "Error: MODEL_ENCRYPTION_KEY is not set"; exit 1)
+	@[ -f cosign.pub ] || (echo "Error: cosign.pub not found — run 'make generate-keys' first"; exit 1)
+	@echo "Registering model key at kbs:///$(NAMESPACE)/conf-seismic-model-key/key..."
+	@curl -fsSL -X PUT $(KBS_URL)/kbs/v0/resource/$(NAMESPACE)/conf-seismic-model-key/key \
+	    --data-binary "$(MODEL_ENCRYPTION_KEY)"
+	@echo "Registering cosign public key at kbs:///$(NAMESPACE)/conf-seismic-cosign-key/pub-key..."
+	@curl -fsSL -X PUT $(KBS_URL)/kbs/v0/resource/$(NAMESPACE)/conf-seismic-cosign-key/pub-key \
+	    --data-binary @cosign.pub
+	@echo "Registering image verification policy at kbs:///$(NAMESPACE)/conf-seismic-image-policy/policy..."
+	@printf '{"default":[{"type":"reject"}],"transports":{"docker":{"%s":[{"type":"sigstoreSigned","keyPath":"kbs:///%s/conf-seismic-cosign-key/pub-key"}]}}}' \
+	    "$(APP_IMAGE_REPO)" "$(NAMESPACE)" \
+	    | curl -fsSL -X PUT $(KBS_URL)/kbs/v0/resource/$(NAMESPACE)/conf-seismic-image-policy/policy \
+	        --data-binary @-
+	@echo "Attestation secrets registered for namespace $(NAMESPACE)."

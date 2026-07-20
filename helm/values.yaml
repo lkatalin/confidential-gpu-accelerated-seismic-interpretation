@@ -4,11 +4,13 @@ app:
 modelcar:
   image: quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-deepseismic-model:0.1.0
 
-# Pass at install time: --set modelEncryptionKey="$MODEL_ENCRYPTION_KEY"
-# Never commit a real key here.
-modelEncryptionKey: ""
-
 runtimeClassName: kata-cc-nvidia-gpu
+
+# Built and encoded by make install — do not set manually.
+initdata: ""
+
+# KBS route URL — substituted into initdata at make install time.
+kbsUrl: ""
 
 tolerations:
   - key: g5-gpu

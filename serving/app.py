@@ -2,16 +2,14 @@
 """
 Seismic Facies Classification — Gradio web UI.
 
-At startup, decrypts the AES-256-CBC model weights from MODEL_PATH into an
-in-memory BytesIO (plaintext never touches disk), loads a U-Net ResNet-50,
-then serves a file-upload interface where users upload a .npy seismic section
-and receive a colour-coded facies classification PNG.
+At startup, loads the plaintext model weights from MODEL_PATH (decrypted by
+the model-decrypt init container via KBS/CDH attestation), then serves a
+file-upload interface where users upload a .npy seismic section and receive
+a colour-coded facies classification PNG.
 """
 import io
 import math
 import os
-import subprocess
-import sys
 
 import gradio as gr
 import matplotlib
@@ -24,7 +22,7 @@ from PIL import Image
 
 matplotlib.use("Agg")
 
-MODEL_PATH = os.getenv("MODEL_PATH", "/models-cache/dutchf3_unet_final.pth.enc")
+MODEL_PATH = os.getenv("MODEL_PATH", "/models-cache/dutchf3_unet_final.pth")
 PORT = int(os.getenv("PORT", "7860"))
 NUM_CLASSES = 6
 
@@ -70,22 +68,9 @@ MODEL = None
 DEVICE = None
 
 
-def _decrypt_model(enc_path: str, key: str) -> bytes:
-    result = subprocess.run(
-        ["openssl", "enc", "-d", "-aes-256-cbc", "-pbkdf2", "-in", enc_path, "-pass", "stdin"],
-        input=key.encode(),
-        capture_output=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"Decryption failed: {result.stderr.decode()}")
-    return result.stdout
-
-
-def _load_model(key: str, device: torch.device) -> smp.Unet:
-    print(f"Decrypting model from {MODEL_PATH} ...")
-    plaintext = _decrypt_model(MODEL_PATH, key)
-    print(f"Loading {len(plaintext) // 1_048_576} MB into {device} ...")
-    state = torch.load(io.BytesIO(plaintext), map_location=device)
+def _load_model(device: torch.device) -> smp.Unet:
+    print(f"Loading model from {MODEL_PATH} ...")
+    state = torch.load(MODEL_PATH, map_location=device, weights_only=False)
     if "model_state_dict" in state:
         state = state["model_state_dict"]
     model = smp.Unet(
@@ -146,14 +131,9 @@ def classify(npy_file) -> Image.Image:
 def main():
     global MODEL, DEVICE
 
-    key = os.getenv("MODEL_ENCRYPTION_KEY", "")
-    if not key:
-        print("ERROR: MODEL_ENCRYPTION_KEY is not set", file=sys.stderr)
-        sys.exit(1)
-
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {DEVICE}")
-    MODEL = _load_model(key, DEVICE)
+    MODEL = _load_model(DEVICE)
 
     with gr.Blocks(title="Seismic Facies Classification") as demo:
         gr.Markdown("# Seismic Facies Classification")

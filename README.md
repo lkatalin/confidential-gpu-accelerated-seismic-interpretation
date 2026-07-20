@@ -17,14 +17,19 @@ AI-powered rock type classification from North Sea seismic data — running with
 - [Deploy](#deploy)
   - [Clone the repository](#clone-the-repository)
   - [Part 1: Platform setup (cluster-admin, once per cluster)](#part-1-platform-setup-cluster-admin-once-per-cluster)
-    - [Step 1: Install operators](#step-1-install-operators)
-    - [Step 2: Apply TEE node feature rules and Kata configuration](#step-2-apply-tee-node-feature-rules-and-kata-configuration)
+    - [Step 1: Install Node Feature Discovery](#step-1-install-node-feature-discovery)
+    - [Step 2: Install OpenShift Sandboxed Containers](#step-2-install-openshift-sandboxed-containers)
+    - [Step 3: Install the Trustee operator](#step-3-install-the-trustee-operator)
+    - [Step 3a: Create the kbs-auth-public-key Secret](#step-3a-create-the-kbs-auth-public-key-secret)
+    - [Step 4: Deploy KBS](#step-4-deploy-kbs)
+    - [Step 5: Expose the KBS route](#step-5-expose-the-kbs-route)
+    - [Step 6: Configure the attestation policy](#step-6-configure-the-attestation-policy)
+    - [Step 7: Confirm kata runtimeClass is available](#step-7-confirm-kata-runtimeclass-is-available)
+    - [Step 8: Register app-specific secrets with KBS](#step-8-register-app-specific-secrets-with-kbs)
   - [Part 2: Application deployment (namespace admin)](#part-2-application-deployment-namespace-admin)
-    - [Step 1: Deploy the Key Broker Server](#step-1-deploy-the-key-broker-server)
-    - [Step 2: Apply the attestation policy](#step-2-apply-the-attestation-policy)
-    - [Step 3: Create the project](#step-3-create-the-project)
-    - [Step 4: Deploy the application](#step-4-deploy-the-application)
-    - [Step 5: Get the application URL](#step-5-get-the-application-url)
+    - [Step 1: Create the project](#step-1-create-the-project)
+    - [Step 2: Deploy the application](#step-2-deploy-the-application)
+    - [Step 3: Get the application URL](#step-3-get-the-application-url)
   - [Use the application](#use-the-application)
     - [Upload seismic data](#upload-seismic-data)
     - [Run classification](#run-classification)
@@ -238,120 +243,288 @@ Sample `.npy` seismic sections from the Dutch F3 dataset are included in the `sa
 
 ### Part 1: Platform setup (cluster-admin, once per cluster)
 
-These steps install cluster-scoped infrastructure. They are typically performed once by a platform or operations team. If your cluster already has the Sandboxed Containers operator, NFD, the NVIDIA GPU Operator, and a `kata-cc-nvidia-gpu` RuntimeClass, skip to [Part 2](#part-2-application-deployment-namespace-admin).
+This is a cluster-admin, once-per-cluster operation. Run `make setup-trustee-in-cluster` to perform all steps automatically, or follow the manual steps below using the OpenShift web console.
 
-#### Step 1: Install operators
+OSC is installed first so that node reboots run in parallel while the Trustee operator and KBS are being configured, reducing total setup time.
 
-Install the three required operators from OperatorHub in the OpenShift web console, or via the CLI:
+**Prerequisites:**
+- Logged in as cluster-admin
+- NVIDIA GPU Operator already installed (verify: **Operators → Installed Operators → namespace `nvidia-gpu-operator` → status Succeeded**)
 
-```bash
-oc apply -f helm/tdx-setup/operators.yaml
+#### Step 1: Install Node Feature Discovery
+
+NFD labels cluster nodes with hardware capabilities (GPU, CPU features). This is required for GPU workloads and for the `kata-cc-nvidia-gpu` runtimeClass that OSC creates.
+
+1. Go to **Operators → OperatorHub**
+2. Search for "Node Feature Discovery"
+3. Select **Node Feature Discovery** (Red Hat source)
+4. Click **Install**, leave defaults (namespace: `openshift-nfd`), click **Install**
+5. Go to **Operators → Installed Operators**, select namespace `openshift-nfd`, wait until the status shows **Succeeded**
+6. Click **Node Feature Discovery Operator**, click the **NodeFeatureDiscovery** tab
+7. Click **Create NodeFeatureDiscovery**, accept the defaults, click **Create**
+
+#### Step 2: Install OpenShift Sandboxed Containers
+
+> **NOTE:** If KBS and the app run on separate clusters, perform this step on the app cluster, not the KBS cluster. The KBS cluster does not need OSC.
+
+> **WARNING:** Applying the KataConfig triggers a node reboot rollout. Worker nodes will restart one at a time and this takes 10–20 minutes. Do not do this during a maintenance window freeze.
+
+1. Go to **Operators → OperatorHub**
+2. Search for "OpenShift sandboxed containers"
+3. Select **OpenShift sandboxed containers operator** (Red Hat source)
+4. Click **Install**, leave defaults (namespace: `openshift-sandboxed-containers-operator`), set **Update approval** to **Manual**, click **Install**
+5. Go to **Operators → Installed Operators**, select namespace `openshift-sandboxed-containers-operator`, click **Upgrade available** and approve the InstallPlan
+6. Wait until the status shows **Succeeded**
+
+Enable confidential containers mode before applying KataConfig:
+
+1. Go to **Workloads → ConfigMaps**, select namespace `openshift-sandboxed-containers-operator`
+2. Click **Create ConfigMap**, switch to YAML view and paste:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: osc-feature-gates
+  namespace: openshift-sandboxed-containers-operator
+data:
+  confidential: "true"
+  deploymentMode: "MachineConfig"
 ```
 
-This installs:
-- **OpenShift Sandboxed Containers** — provides the `kata-cc` and `kata-cc-nvidia-gpu` RuntimeClasses
-- **Node Feature Discovery (NFD)** — detects and labels TEE-capable nodes
-- **NVIDIA GPU Operator** — manages GPU drivers and enables CC mode on H100 nodes
+3. Click **Create**
 
-Wait for all operators to reach `Succeeded` phase:
+Apply the KataConfig to start the node reboot rollout:
 
-```bash
-oc get csv -n openshift-operators
+1. Go to **Operators → Installed Operators → OpenShift sandboxed containers operator**, click the **KataConfig** tab
+2. Click **Create KataConfig**, switch to YAML view and paste:
+
+```yaml
+apiVersion: kataconfiguration.openshift.io/v1
+kind: KataConfig
+metadata:
+  name: example-kataconfig
+spec:
+  enablePeerPods: false
+  checkNodeEligibility: false
+  logLevel: info
 ```
 
-#### Step 2: Apply TEE node feature rules and Kata configuration
+3. Click **Create**
+4. Go to **Compute → MachineConfigPools** — the `kata-oc` pool (or `master` on single-node) will show nodes rebooting in sequence. You do not need to wait here; continue to Step 3 while reboots proceed in the background. Step 7 confirms the rollout is complete.
 
-Apply the node feature detection rules and create the `KataConfig`. The supplied manifests cover Intel TDX — for AMD SEV-SNP nodes use the equivalent `helm/sev-snp-setup/` manifests instead:
+#### Step 3: Install the Trustee operator
+
+1. Go to **Operators → OperatorHub**
+2. Search for "trustee"
+3. Select **Trustee Operator** (Red Hat source)
+4. Click **Install**
+5. Set **Update channel** to `stable`
+6. Set **Installation mode** to "A specific namespace"
+7. Under **Installed Namespace**, select **Create namespace** and enter `trustee-operator-system`
+8. Set **Update approval** to **Manual**
+9. Click **Install**, then go to **Operators → Installed Operators**, select namespace `trustee-operator-system`, click **Upgrade available** and approve the InstallPlan
+10. Wait until the status shows **Succeeded**
+
+#### Step 3a: Create the kbs-auth-public-key Secret
+
+KBS will not start without an Ed25519 key pair. Run this once from any machine with `oc` access:
 
 ```bash
-oc apply -f helm/tdx-setup/node-feature-rule.yaml
-oc apply -f helm/tdx-setup/tdx-kataconfig.yaml
-oc apply -f helm/tdx-setup/gpu-cluster-policy.yaml
+openssl genpkey -algorithm ed25519 -out /tmp/kbs-private.pem
+openssl pkey -in /tmp/kbs-private.pem -pubout -out /tmp/kbs-public.pem
+oc create secret generic kbs-auth-public-key \
+    -n trustee-operator-system \
+    --from-file=publicKey=/tmp/kbs-public.pem
+rm /tmp/kbs-private.pem /tmp/kbs-public.pem
 ```
 
-Wait for TEE-capable nodes to be labelled (shown here for Intel TDX; AMD SEV-SNP nodes will carry the `amd.feature.node.kubernetes.io/snp=true` label instead):
+The private key is discarded immediately — KBS only needs the public key to verify client attestation tokens.
 
-```bash
-oc get nodes -l intel.feature.node.kubernetes.io/tdx=true
+#### Step 4: Deploy KBS
+
+1. Go to **Operators → Installed Operators**, select namespace `trustee-operator-system`
+2. Click **Trustee Operator**, then click the **TrusteeConfig** tab
+3. Click **Create TrusteeConfig**
+4. Switch to YAML view and paste:
+
+```yaml
+apiVersion: confidentialcontainers.org/v1alpha1
+kind: TrusteeConfig
+metadata:
+  name: trusteeconfig
+  namespace: trustee-operator-system
+spec:
+  profileType: Restricted
+  kbsServiceType: ClusterIP
+  httpsSpec:
+    tlsSecretName: trustee-tls-cert
+  attestationTokenVerificationSpec:
+    tlsSecretName: trustee-token-cert
 ```
+
+5. Click **Create**
+6. Go to **Workloads → Pods**, select namespace `trustee-operator-system`, and wait for `trustee-deployment-*` to show **Running**
+
+#### Step 5: Expose the KBS route
+
+1. Go to **Networking → Routes**, select namespace `trustee-operator-system`
+2. Click **Create Route** and fill in:
+   - **Name:** `kbs-service`
+   - **Service:** `kbs-service`
+   - **Target port:** `kbs-port`
+   - **Secure route:** enabled
+   - **TLS termination:** Passthrough
+3. Click **Create**
+4. Note the **Location** URL on the Route detail page — you will need this hostname in Step 8
+
+#### Step 6: Configure the attestation policy
+
+The Trustee operator created a KbsConfig named `trusteeconfig-kbs-config` when it processed the TrusteeConfig above. Apply the ConfigMaps first, then update KbsConfig to reference them.
+
+Create the OPA Rego policy ConfigMap:
+
+1. Go to **Workloads → ConfigMaps**, select namespace `trustee-operator-system`
+2. Click **Create ConfigMap**, switch to YAML view and paste:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: conf-seismic-attestation-policy
+  namespace: trustee-operator-system
+data:
+  policy.rego: |
+    package policy
+    import rego.v1
+
+    default allow = false
+
+    allow if {
+        count(input.submods) > 0
+        not executable_failing
+    }
+
+    executable_failing if {
+        some _, submod in input.submods
+        executables := submod["ear.trustworthiness-vector"]["executables"]
+        not in_affirming_range(executables)
+    }
+
+    in_affirming_range(val) if { val >= 2; val <= 31 }
+```
+
+3. Click **Create**
+
+Create the RVPS reference values ConfigMap:
+
+1. Click **Create ConfigMap** again, switch to YAML view and paste:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: conf-seismic-rvps-reference-values
+  namespace: trustee-operator-system
+data:
+  reference-values.json: "[]"
+```
+
+2. Click **Create**
+
+Update the KbsConfig to reference both ConfigMaps:
+
+1. Go to **Operators → Installed Operators → Trustee Operator**, click the **KbsConfig** tab
+2. Click the existing `trusteeconfig-kbs-config` entry, then click **Edit KbsConfig**
+3. Switch to YAML view and replace the `spec` with:
+
+```yaml
+spec:
+  kbsDeploymentType: AllInOneDeployment
+  kbsServiceType: ClusterIP
+  kbsHttpsKeySecretName: trustee-tls-cert
+  kbsHttpsCertSecretName: trustee-tls-cert
+  kbsAuthSecretName: kbs-auth-public-key
+  kbsAttestationPolicyConfigMapName: conf-seismic-attestation-policy
+  kbsRvpsRefValuesConfigMapName: conf-seismic-rvps-reference-values
+```
+
+4. Click **Save**
+5. Go to **Workloads → Pods** and wait for `trustee-deployment-*` to restart and return to **Running**
+
+#### Step 7: Confirm kata runtimeClass is available
+
+By now the node reboots started in Step 2 (KataConfig) should be complete or close to finishing.
+
+1. Go to **Compute → MachineConfigPools** and confirm the `kata-oc` pool (or `master` on single-node) shows `UPDATED=True`, `UPDATING=False`, `DEGRADED=False`
+2. Go to **Compute → RuntimeClasses** and confirm `kata-cc` is listed, and `kata-cc-nvidia-gpu` is listed (requires GPU Operator)
 
 **Expected outcome:**
-- ✓ At least one node listed with the `intel.feature.node.kubernetes.io/tdx=true` label
-- ✓ `kata-cc-nvidia-gpu` RuntimeClass available on the cluster — verify with `oc get runtimeclass kata-cc-nvidia-gpu`
+- ✓ `kata-cc` runtimeClass listed
+- ✓ `kata-cc-nvidia-gpu` runtimeClass listed
+
+#### Step 8: Register app-specific secrets with KBS
+
+The KBS has no web UI for secret registration. These three `curl` commands register the model key, cosign public key, and image verification policy directly against the KBS REST API. Get the KBS route hostname from Step 5, then run from a terminal with `MODEL_ENCRYPTION_KEY` set and `cosign.pub` present:
+
+```bash
+KBS_ROUTE=<hostname from Step 5>
+NAMESPACE=<your deployment namespace, e.g. seismic-interpretation>
+
+# Model decryption key
+curl -fsSL -X PUT https://$KBS_ROUTE/kbs/v0/resource/$NAMESPACE/conf-seismic-model-key/key \
+    --data-binary "$MODEL_ENCRYPTION_KEY"
+
+# Cosign public key
+curl -fsSL -X PUT https://$KBS_ROUTE/kbs/v0/resource/$NAMESPACE/conf-seismic-cosign-key/pub-key \
+    --data-binary @cosign.pub
+
+# Image verification policy
+APP_IMAGE_REPO=quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-deepseismic-app
+printf '{"default":[{"type":"reject"}],"transports":{"docker":{"%s":[{"type":"sigstoreSigned","keyPath":"kbs:///%s/conf-seismic-cosign-key/pub-key"}]}}}' \
+    "$APP_IMAGE_REPO" "$NAMESPACE" \
+    | curl -fsSL -X PUT \
+        https://$KBS_ROUTE/kbs/v0/resource/$NAMESPACE/conf-seismic-image-policy/policy \
+        --data-binary @-
+```
+
+Or equivalently: `make setup-attestation NAMESPACE=$NAMESPACE KBS_URL=https://$KBS_ROUTE`
+
+> `make setup-trustee-in-cluster` runs Steps 1–7 automatically. `make setup-attestation` performs Step 8.
 
 ---
 
 ### Part 2: Application deployment (namespace admin)
 
-These steps require only `admin` access on the target namespaces and `self-provisioner` to create projects. No cluster-admin access is needed. `self-provisioner` is the built-in OpenShift role that allows authenticated users to create their own projects — it is assigned to all users by default.
+These steps require only `admin` access on the target namespace and `self-provisioner` to create projects. No cluster-admin access is needed after Part 1 is complete.
 
-#### Step 1: Deploy the Key Broker Server
-
-The Key Broker Server (KBS) holds the AES-256-CBC key used to encrypt the model weights and enforces the attestation policy. It must be running before the inference pod starts.
-
-```bash
-helm install trustee ./helm/trustee \
-  --namespace trustee-system \
-  --create-namespace
-```
-
-Wait for the KBS to be ready:
-
-```bash
-oc rollout status deployment/kbs -n trustee-system
-```
-
-**Expected outcome:**
-- ✓ `deployment.apps/kbs successfully rolled out`
-
-#### Step 2: Apply the attestation policy
-
-The KBS policy requires all three attestation checks to pass before the model decryption key is released. The policy is expressed in OPA Rego and references the cosign public key for the model image.
-
-```bash
-oc create configmap kbs-policy \
-  --from-file=policy.rego=helm/trustee/policy.rego \
-  --from-file=cosign.pub=helm/trustee/cosign.pub \
-  -n trustee-system
-```
-
-The supplied `policy.rego` enforces:
-- **Application container signature**: the running application container (`quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-app:v1`) must be signed by the key in `cosign.pub` — the Attestation Agent measures the container image digest inside the TEE and includes it in the evidence bundle, proving the code requesting the key is the trusted application and not an arbitrary container
-- **NVIDIA CC attestation**: the H100 must be running in CC mode, verified by NVIDIA NRAS
-- **CPU TEE attestation**: the CPU must be running in a verified hardware Trust Domain (Intel® TDX or AMD SEV-SNP)
-
-The ModelCar image (`quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-model:v1`) is signed separately via cosign for supply chain integrity — to verify the encrypted artifact in the registry has not been tampered with — but this is independent of the KBS key release policy.
-
-**Expected outcome:**
-- ✓ `configmap/kbs-policy created`
-
-#### Step 3: Create the project
+#### Step 1: Create the project
 
 ```bash
 oc new-project seismic-interpretation
 ```
 
-#### Step 4: Deploy the application
+#### Step 2: Deploy the application
 
 ```bash
 make install NAMESPACE=seismic-interpretation
 ```
 
-This deploys a single pod running inside a `kata-cc-nvidia-gpu` confidential container. On startup the pod:
+This fetches the KBS TLS certificate from the cluster, builds the initdata blob (AA/CDH configuration for the kata VM), and deploys the app via Helm. On startup the pod runs two init containers before the app:
 
-1. **Init container `init-attestation`**: the Attestation Agent measures the application container image digest (`conf-gpu-accel-seismic-interp-app:v1`) inside the TEE, collects a CPU TEE quote (Intel TDX or AMD SEV-SNP) and an NVIDIA NRAS report, then sends the full evidence bundle to the Trustee stack. The **Attestation Service (AS)** verifies the evidence — checking the cosign signature on `conf-gpu-accel-seismic-interp-app:v1`, calling NVIDIA NRAS to validate the GPU CC report, and calling Intel PCS or AMD to validate the CPU TEE quote. The **Key Broker Service (KBS)** then evaluates the OPA Rego policy against the AS's verified claims — if all three checks pass, the KBS returns the AES-256-CBC decryption key into the hardware Trust Domain.
+1. **Init container `model-init`**: copies the encrypted ModelCar weights (`dutchf3_unet_final.pth.enc`) to the shared `/models-cache` volume.
 
-2. **Init container `init-model`**: pulls the encrypted ModelCar from `quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-model:v1`, decrypts `dutchf3_unet_final.pth.enc` using the key received from the KBS, and writes the plaintext weights to `/models-cache`. Decryption runs entirely inside TEE-encrypted memory — the plaintext weights are never written to disk.
+2. **Init container `model-decrypt`**: the Attestation Agent (injected by the kata runtime) contacts KBS, presents the cosign image signature as evidence, and receives a session token if the policy passes. The Confidential Data Hub (CDH) uses that token to retrieve the model decryption key from KBS and exposes it via a local REST API. `model-decrypt` fetches the key from CDH, decrypts `.pth.enc` → `.pth` on the shared volume, and deletes the key from local storage.
 
-3. **Application container**: loads the model from `/models-cache` and starts the Gradio UI on port 7860.
+3. **Application container**: loads the plaintext model from `/models-cache` and starts the Gradio UI on port 7860.
 
-Wait for the pod to reach `Running` state — initial startup takes 5–8 minutes while the hardware Trust Domain is established, NRAS attestation completes, and the ModelCar is pulled and decrypted:
+Wait for both init containers to complete and the app container to reach `Running`:
 
 ```bash
 oc get pods -n seismic-interpretation -w
 ```
 
-#### Step 5: Get the application URL
+#### Step 3: Get the application URL
 
 ```bash
 oc get route seismic-app -n seismic-interpretation -o jsonpath='{.spec.host}'
@@ -361,7 +534,7 @@ Open the printed URL in your browser.
 
 **Expected outcome:**
 - ✓ The Gradio UI loads showing an upload panel and an empty results area
-- ✓ The pod logs show `ALL ATTESTATION CHECKS PASSED — MODEL DECRYPTION KEY RECEIVED` before the UI started
+- ✓ `oc logs <pod> -c model-decrypt` shows `Key received from KBS via CDH` then `Model decrypted to /models-cache/dutchf3_unet_final.pth`
 
 ### Use the application
 
@@ -403,31 +576,58 @@ Click **Clear** to reset and upload a different section.
 
 ### Verify confidential execution (Optional)
 
-To confirm that all three attestation checks passed before inference ran, inspect the init container logs:
+Confirm KBS is running and the app-specific secrets are registered:
 
 ```bash
-POD=$(oc get pod -n seismic-interpretation -l app.kubernetes.io/name=seismic-app -o name)
+# KBS pod is Running
+oc get pods -n trustee-operator-system
 
-# Check CPU TEE (Intel TDX or AMD SEV-SNP) and NVIDIA CC attestation, and KBS key release
-oc logs -n seismic-interpretation $POD -c init-attestation
-
-# Check ModelCar pull and model decryption
-oc logs -n seismic-interpretation $POD -c init-model
+# Secrets registered under the deployment namespace
+NAMESPACE=seismic-interpretation
+oc exec -n trustee-operator-system deployment/trustee-deployment -- \
+    ls /opt/confidential-containers/kbs/repository/$NAMESPACE/
+# expect: conf-seismic-cosign-key  conf-seismic-image-policy  conf-seismic-model-key
 ```
 
-**Expected outcome — `init-attestation`:**
-```
-[1/3] CPU TEE attestation verified (Intel TDX or AMD SEV-SNP) ✓
-[2/3] NVIDIA CC attestation verified (NRAS) ✓
-[3/3] Container image cosign signature verified ✓
-ALL ATTESTATION CHECKS PASSED — MODEL DECRYPTION KEY RECEIVED
+To confirm that attestation succeeded and the model key was fetched from KBS, inspect the init container logs:
+
+```bash
+POD=$(oc get pod -n seismic-interpretation -l app.kubernetes.io/name=seismic-app -o jsonpath='{.items[0].metadata.name}')
+
+# Check KBS key retrieval and model decryption
+oc logs -n seismic-interpretation $POD -c model-decrypt
+
+# Check model load in the app container
+oc logs -n seismic-interpretation $POD -c app | head -5
 ```
 
-**Expected outcome — `init-model`:**
+**Expected outcome — `model-decrypt`:**
 ```
-Pulling quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-model:v1 ...
-Decrypting dutchf3_unet_final.pth.enc → /models-cache/ (inside TEE-encrypted memory) ...
+Waiting for CDH to be ready...
+Key received from KBS via CDH
+Model decrypted to /models-cache/dutchf3_unet_final.pth
+```
+
+**Expected outcome — `app`:**
+```
+Device: cuda
+Loading model from /models-cache/dutchf3_unet_final.pth ...
 Model ready.
+```
+
+Confirm the model decryption key is not present as an environment variable:
+
+```bash
+oc exec -n seismic-interpretation $POD -c app -- env | grep MODEL
+# expect: only MODEL_PATH — no MODEL_ENCRYPTION_KEY
+```
+
+Confirm the initdata annotation is present and decodes to valid TOML with the KBS URL:
+
+```bash
+oc get pod -n seismic-interpretation $POD \
+    -o jsonpath='{.metadata.annotations.io\.katacontainers\.config\.hypervisor\.cc_init_data}' \
+    | base64 -d | gunzip | grep url
 ```
 
 #### Attempt to access the running container
@@ -455,11 +655,7 @@ Try the same through the OpenShift web console:
 **Expected outcome:**
 - The terminal fails to connect and displays: `"Failed to connect: ExecProcessRequest is not permitted"`
 
-This confirms two distinct confidential computing properties:
-
-1. **Memory isolation** — the CPU TEE (TDX or SEV-SNP) and NVIDIA CC mode encrypt the workload's memory. Even a privileged process on the host node cannot read the decrypted model weights or the uploaded seismic data from outside the Trust Domain.
-
-2. **Exec isolation** — the Kata agent exec-deny policy means no one — including cluster administrators — can inject a shell or additional process into the running container. The only code that runs inside the Trust Domain is the signed `conf-gpu-accel-seismic-interp-app:v1` image that passed the KBS attestation check.
+This confirms that the Kata agent exec-deny policy prevents anyone — including cluster administrators — from injecting a shell or additional process into the running container. The only code that runs inside the Trust Domain is the cosign-signed app image that passed the KBS attestation check.
 
 ### Optional: Encrypt and publish your own model
 
@@ -538,26 +734,28 @@ Then re-run the deploy steps from [Step 4](#step-4-deploy-the-application) onwar
 
 ### Delete
 
-#### Namespace resources (namespace admin)
+#### Application (namespace admin)
 
-Remove the application and the KBS — no cluster-admin required:
+Remove the application — no cluster-admin required:
 
 ```bash
-helm uninstall seismic-app --namespace seismic-interpretation
+make uninstall NAMESPACE=seismic-interpretation
 oc delete project seismic-interpretation
-
-helm uninstall trustee --namespace trustee-system
-oc delete project trustee-system
 ```
 
-#### Cluster-scoped resources (cluster-admin)
+#### Cluster-wide resources (cluster-admin)
 
-The TEE node feature rules and Kata configuration are cluster-wide resources shared with other workloads. Only remove them if no other confidential workloads are running on the cluster:
+The KataConfig, NFD, OSC, and Trustee operator are cluster-wide resources shared with other workloads. Only remove them if no other confidential workloads are running on the cluster:
 
 ```bash
 # Only run if no other confidential workloads exist on the cluster
-oc delete -f helm/tdx-setup/node-feature-rule.yaml
-oc delete -f helm/tdx-setup/tdx-kataconfig.yaml
+oc delete kataconfig example-kataconfig
+oc delete trusteeconfig trusteeconfig -n trustee-operator-system
+oc delete namespace trustee-operator-system
+oc delete subscription sandboxed-containers-operator -n openshift-sandboxed-containers-operator
+oc delete namespace openshift-sandboxed-containers-operator
+oc delete subscription nfd -n openshift-nfd
+oc delete namespace openshift-nfd
 ```
 
 ---

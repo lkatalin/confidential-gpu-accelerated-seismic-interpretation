@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""
+Build the cc_init_data blob for the kata VM.
+
+Usage: build-initdata.py <KBS_URL> <NAMESPACE>
+  Reads the KBS TLS certificate PEM from stdin.
+  Prints the gzip+base64-encoded initdata TOML to stdout.
+
+The initdata TOML contains three keys (aa.toml, cdh.toml, policy.rego).
+Its SHA-256 hash is included in the TEE attestation report when hardware TEE
+is present, binding the pod's KBS endpoint and image policy to the hardware
+measurement.  On the dev cluster (no TEE) the hash is computed but not bound
+to hardware; the binding activates when the pod moves to the bare metal cluster.
+"""
+import base64
+import gzip
+import sys
+
+if len(sys.argv) != 3:
+    print(f"Usage: {sys.argv[0]} <KBS_URL> <NAMESPACE>", file=sys.stderr)
+    sys.exit(1)
+
+kbs_url = sys.argv[1]
+namespace = sys.argv[2]
+kbs_cert = sys.stdin.read().strip()
+
+aa_toml = f"""\
+[token_configs]
+[token_configs.coco_as]
+url = "{kbs_url}"
+
+[token_configs.kbs]
+url = "{kbs_url}"
+cert = \"\"\"
+{kbs_cert}
+\"\"\"\
+"""
+
+cdh_toml = f"""\
+socket = 'unix:///run/confidential-containers/cdh.sock'
+credentials = []
+
+[kbc]
+name = "cc_kbc"
+url = "{kbs_url}"
+kbs_cert = \"\"\"
+{kbs_cert}
+\"\"\"
+
+[image]
+image_security_policy_uri = 'kbs:///{namespace}/conf-seismic-image-policy/policy'\
+"""
+
+policy_rego = """\
+package agent_policy
+import future.keywords.in
+import future.keywords.if
+default AddARPNeighborsRequest := true
+default AddSwapRequest := true
+default CloseStdinRequest := true
+default CopyFileRequest := true
+default CreateContainerRequest := true
+default CreateSandboxRequest := true
+default DestroySandboxRequest := true
+default GetMetricsRequest := true
+default GetOOMEventRequest := true
+default GuestDetailsRequest := true
+default ListInterfacesRequest := true
+default ListRoutesRequest := true
+default MemHotplugByProbeRequest := true
+default OnlineCPUMemRequest := true
+default PauseContainerRequest := true
+default PullImageRequest := true
+default ReadStreamRequest := true
+default RemoveContainerRequest := true
+default RemoveStaleVirtiofsShareMountsRequest := true
+default ReseedRandomDevRequest := true
+default ResumeContainerRequest := true
+default SetGuestDateTimeRequest := true
+default SetPolicyRequest := false
+default SignalProcessRequest := true
+default StartContainerRequest := true
+default StartTracingRequest := true
+default StatsContainerRequest := true
+default StopTracingRequest := true
+default TtyWinResizeRequest := true
+default UpdateContainerRequest := true
+default UpdateEphemeralMountsRequest := true
+default UpdateInterfaceRequest := true
+default UpdateRoutesRequest := true
+default WaitProcessRequest := true
+default WriteStreamRequest := false
+default ExecProcessRequest := false\
+"""
+
+toml = f"""\
+algorithm = "sha256"
+version = "0.1.0"
+
+[data]
+"aa.toml" = '''
+{aa_toml}
+'''
+
+"cdh.toml" = '''
+{cdh_toml}
+'''
+
+"policy.rego" = '''
+{policy_rego}
+'''
+"""
+
+print(base64.b64encode(gzip.compress(toml.encode())).decode(), end="")
