@@ -432,7 +432,6 @@ setup-trustee-in-cluster:
 	    echo "WARNING: TrusteeConfig already exists — KBS already deployed, skipping."; \
 	else \
 	    oc apply -f helm/trustee/templates/trustee-config.yaml; \
-	    oc apply -f helm/trustee/templates/kbs-route.yaml; \
 	    oc rollout status deployment/trustee-deployment \
 	        -n trustee-operator-system --timeout=5m; \
 	fi; \

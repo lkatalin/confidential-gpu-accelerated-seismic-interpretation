@@ -23,7 +23,7 @@ AI-powered rock type classification from North Sea seismic data — running with
     - [Step 3a: Create the kbs-auth-public-key Secret](#step-3a-create-the-kbs-auth-public-key-secret)
     - [Step 3b: Create the trustee-tls-cert Secret](#step-3b-create-the-trustee-tls-cert-secret)
     - [Step 4: Deploy KBS](#step-4-deploy-kbs)
-    - [Step 5: Expose the KBS route](#step-5-expose-the-kbs-route)
+    - [Step 5: Verify the KBS route](#step-5-verify-the-kbs-route)
     - [Step 6: Configure the attestation policy](#step-6-configure-the-attestation-policy)
     - [Step 7: Confirm kata runtimeClass is available](#step-7-confirm-kata-runtimeclass-is-available)
     - [Step 8: Register app-specific secrets with KBS](#step-8-register-app-specific-secrets-with-kbs)
@@ -381,17 +381,13 @@ spec:
 5. Click **Create**
 6. Go to **Workloads → Pods**, select namespace `trustee-operator-system`, and wait for `trustee-deployment-*` to show **Running**
 
-#### Step 5: Expose the KBS route
+#### Step 5: Verify the KBS route
 
-1. Go to **Networking → Routes**, select namespace `trustee-operator-system`
-2. Click **Create Route** and fill in:
-   - **Name:** `kbs-service`
-   - **Service:** `kbs-service`
-   - **Target port:** `kbs-port`
-   - **Secure route:** enabled
-   - **TLS termination:** Passthrough
-3. Click **Create**
-4. Note the **Location** URL on the Route detail page — you will need this hostname in Step 8
+The Trustee operator creates a passthrough TLS Route named `kbs-route` automatically when it processes the TrusteeConfig. Verify it exists and note its hostname — you will need it in Step 8:
+
+```bash
+oc get route kbs-route -n trustee-operator-system -o jsonpath='{.spec.host}'
+```
 
 #### Step 6: Configure the attestation policy
 
@@ -483,7 +479,7 @@ By now the node reboots started in Step 2 (KataConfig) should be complete or clo
 The KBS has no web UI for secret registration. These three `curl` commands register the model key, cosign public key, and image verification policy directly against the KBS REST API. Get the KBS route hostname from Step 5, then run from a terminal with `MODEL_ENCRYPTION_KEY` set and `cosign.pub` present:
 
 ```bash
-KBS_ROUTE=<hostname from Step 5>
+KBS_ROUTE=$(oc get route kbs-route -n trustee-operator-system -o jsonpath='{.spec.host}')
 NAMESPACE=<your deployment namespace, e.g. seismic-interpretation>
 
 # Model decryption key

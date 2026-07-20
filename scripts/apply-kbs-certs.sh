@@ -13,7 +13,7 @@ if [ -n "${1:-}" ]; then
     ROUTE_HOST="$1"
 else
     CLUSTER_DOMAIN=$(oc get ingress.config cluster -o jsonpath='{.spec.domain}')
-    ROUTE_HOST="kbs-service-trustee-operator-system.${CLUSTER_DOMAIN}"
+    ROUTE_HOST="kbs-route-trustee-operator-system.${CLUSTER_DOMAIN}"
 fi
 echo "KBS Route hostname: ${ROUTE_HOST}"
 TEMPLATES="${SCRIPT_DIR}/../helm/trustee/templates"
