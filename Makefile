@@ -184,29 +184,39 @@ check-prereqs:
 	\
 	echo ""; \
 	echo "=== CPU TEE capability ==="; \
-	CPU_FLAGS=$$(oc debug node/$$(oc get nodes -o jsonpath='{.items[0].metadata.name}') \
-	    -- chroot /host grep -m1 '^flags' /proc/cpuinfo 2>/dev/null); \
-	if echo "$$CPU_FLAGS" | grep -q ' vmx '; then \
-	    ok "Intel VMX (hardware virtualisation) present"; \
-	    if oc debug node/$$(oc get nodes -o jsonpath='{.items[0].metadata.name}') \
-	            -- chroot /host grep -rq 'tdx' /sys/firmware/acpi/tables/TDEL 2>/dev/null; then \
-	        ok "Intel TDX: ACPI TDEL table found (TDX active)"; \
-	    else \
-	        CPU_MODEL=$$(oc debug node/$$(oc get nodes -o jsonpath='{.items[0].metadata.name}') \
-	            -- chroot /host grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2 | xargs); \
-	        fail "Intel TDX: ACPI TDEL not found — TDX not active in kernel (CPU: $$CPU_MODEL)"; \
-	        fail "       Enable TDX in BIOS (see README hardware prerequisites) then run: make setup-intel-tee"; \
+	NODE_NAME=$$(oc get nodes -o jsonpath='{.items[0].metadata.name}'); \
+	echo "  Checking dmesg on $$NODE_NAME (spawns a debug pod — takes ~30s)..."; \
+	oc debug node/$$NODE_NAME -- chroot /host dmesg 2>/dev/null \
+	    | grep -iE 'tdx|sev.snp|sme' > /tmp/tee-dmesg-check.txt 2>/dev/null || true; \
+	if grep -qi "tdx" /tmp/tee-dmesg-check.txt; then \
+	    if grep -q "BIOS enabled" /tmp/tee-dmesg-check.txt; then \
+	        ok "Intel TDX: BIOS enabled — $$(grep 'BIOS enabled' /tmp/tee-dmesg-check.txt | tail -1 | sed 's/.*tdx: //')"; \
 	    fi; \
-	elif echo "$$CPU_FLAGS" | grep -q ' svm '; then \
-	    ok "AMD SVM (hardware virtualisation) present"; \
-	    if echo "$$CPU_FLAGS" | grep -q ' sev_snp '; then \
-	        ok "AMD SEV-SNP: CPU flag present"; \
+	    if grep -q "initialization failed: Hibernation" /tmp/tee-dmesg-check.txt; then \
+	        fail "Intel TDX: kernel init blocked by hibernation — run: make setup-intel-tee (adds nohibernate kernel arg)"; \
+	    elif grep -qi "tdx.*initialized\|initialized.*tdx\|module initialized" /tmp/tee-dmesg-check.txt; then \
+	        ok "Intel TDX: kernel initialized — TDX active"; \
+	        if oc get node "$$NODE_NAME" -o jsonpath='{.metadata.labels}' 2>/dev/null \
+	                | grep -q 'intel\.feature\.node\.kubernetes\.io/tdx'; then \
+	            ok "Intel TDX: NFD label intel.feature.node.kubernetes.io/tdx confirmed"; \
+	        else \
+	            warn "Intel TDX: active in kernel but NFD label not yet set — run: make setup-intel-tee"; \
+	        fi; \
 	    else \
-	        fail "AMD SEV-SNP: sev_snp CPU flag not found — enable SNP in BIOS then run: make setup-amd-tee"; \
+	        warn "Intel TDX: BIOS enabled but kernel status unclear — check: oc debug node/$$NODE_NAME -- chroot /host dmesg | grep -i tdx"; \
+	    fi; \
+	elif grep -qi "sev.snp.*enabled\|snp.*active" /tmp/tee-dmesg-check.txt; then \
+	    ok "AMD SEV-SNP: enabled in kernel"; \
+	    if oc get node "$$NODE_NAME" -o jsonpath='{.metadata.labels}' 2>/dev/null \
+	            | grep -q 'amd\.feature\.node\.kubernetes\.io/snp'; then \
+	        ok "AMD SEV-SNP: NFD label amd.feature.node.kubernetes.io/snp confirmed"; \
+	    else \
+	        warn "AMD SEV-SNP: active in kernel but NFD label not yet set — run: make setup-amd-tee"; \
 	    fi; \
 	else \
-	    fail "No VMX or SVM CPU flag — node does not support hardware virtualisation"; \
+	    fail "No TDX or SEV-SNP found in dmesg — enable TEE in server BIOS (see README hardware prerequisites)"; \
 	fi; \
+	rm -f /tmp/tee-dmesg-check.txt; \
 	\
 	echo ""; \
 	echo "=== Required operators ==="; \
@@ -244,18 +254,16 @@ check-prereqs:
 	fi; \
 	\
 	echo ""; \
-	echo "=== TEE kernel parameters ==="; \
-	CMDLINE=$$(oc debug node/$$(oc get nodes -o jsonpath='{.items[0].metadata.name}') \
-	    -- chroot /host cat /proc/cmdline 2>/dev/null || echo ""); \
-	if echo "$$CMDLINE" | grep -q "kvm_intel.tdx=1"; then \
-	    ok "kvm_intel.tdx=1 active in kernel cmdline"; \
+	echo "=== TEE kernel parameters (MachineConfigs) ==="; \
+	if oc get mc 99-enable-intel-tdx --ignore-not-found 2>/dev/null | grep -q .; then \
+	    ok "MachineConfig 99-enable-intel-tdx present (kvm_intel.tdx=1 + vsock-loopback)"; \
 	else \
-	    warn "kvm_intel.tdx=1 not in kernel cmdline — apply via: make setup-intel-tee"; \
+	    warn "MachineConfig 99-enable-intel-tdx not found — run: make setup-intel-tee"; \
 	fi; \
-	if echo "$$CMDLINE" | grep -q "intel_iommu=on"; then \
-	    ok "intel_iommu=on active in kernel cmdline"; \
+	if oc get mc 100-iommu-kernel-args --ignore-not-found 2>/dev/null | grep -q .; then \
+	    ok "MachineConfig 100-iommu-kernel-args present (intel_iommu/amd_iommu=on iommu=pt)"; \
 	else \
-	    warn "intel_iommu=on not in kernel cmdline — apply via: make setup-intel-tee or make setup-amd-tee"; \
+	    warn "MachineConfig 100-iommu-kernel-args not found — run: make setup-intel-tee or setup-amd-tee"; \
 	fi; \
 	\
 	echo ""; \
