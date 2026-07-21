@@ -295,12 +295,19 @@ data:
 
 3. Click **Create**
 
-Apply the KataConfig to start the node reboot rollout:
+Before applying KataConfig, determine your cluster type — this controls which MachineConfigPool kata is installed on:
 
-1. Go to **Operators → Installed Operators → OpenShift sandboxed containers operator**, click the **KataConfig** tab
-2. Click **Create KataConfig**, switch to YAML view and paste:
+```bash
+oc get mcp worker -o jsonpath='{.status.machineCount}'
+```
 
-```yaml
+- **Returns `0`** — single-node cluster: the only node is in the master MCP (common in SNO and small dev clusters). Use the **single-node** KataConfig below.
+- **Returns `1` or more** — multi-node cluster: worker nodes exist in the worker MCP. Use the **multi-node** KataConfig below.
+
+Apply the KataConfig to start the node reboot rollout. **Single-node** (worker MCP count = 0):
+
+```bash
+oc apply -f - <<'EOF'
 apiVersion: kataconfiguration.openshift.io/v1
 kind: KataConfig
 metadata:
@@ -309,10 +316,33 @@ spec:
   enablePeerPods: false
   checkNodeEligibility: false
   logLevel: info
+  kataConfigPoolSelector:
+    matchLabels:
+      pools.operator.machineconfiguration.openshift.io/master: ""
+EOF
 ```
 
-3. Click **Create**
-4. Go to **Compute → MachineConfigPools** — the `kata-oc` pool (or `master` on single-node) will show nodes rebooting in sequence. You do not need to wait here; continue to Step 3 while reboots proceed in the background. Step 7 confirms the rollout is complete.
+**Multi-node** (worker MCP count ≥ 1):
+
+```bash
+oc apply -f - <<'EOF'
+apiVersion: kataconfiguration.openshift.io/v1
+kind: KataConfig
+metadata:
+  name: example-kataconfig
+spec:
+  enablePeerPods: false
+  checkNodeEligibility: false
+  logLevel: info
+EOF
+```
+
+Go to **Compute → MachineConfigPools**:
+
+- **Single-node**: the `master` pool will show `UPDATING=True` then `UPDATED=True`. The node will reboot once — expect ~10 minutes of cluster unavailability.
+- **Multi-node**: a new `kata-oc` pool appears and nodes reboot one at a time (10–20 minutes total).
+
+You do not need to wait here; continue to Step 3 while reboots proceed in the background. Step 7 confirms the rollout is complete.
 
 #### Step 3: Install the Trustee operator
 
@@ -489,8 +519,23 @@ EOF
 
 By now the node reboots started in Step 2 (KataConfig) should be complete or close to finishing.
 
-1. Go to **Compute → MachineConfigPools** and confirm the `kata-oc` pool (or `master` on single-node) shows `UPDATED=True`, `UPDATING=False`, `DEGRADED=False`
-2. Go to **Compute → RuntimeClasses** and confirm `kata-cc` is listed, and `kata-cc-nvidia-gpu` is listed (requires GPU Operator)
+1. Check the MachineConfigPool for your cluster type:
+
+```bash
+# Single-node (worker MCP count = 0):
+oc get mcp master
+
+# Multi-node (worker MCP count ≥ 1):
+oc get mcp kata-oc
+```
+
+Confirm the relevant pool shows `UPDATED=True`, `UPDATING=False`, `DEGRADED=False`.
+
+2. Confirm the runtimeClasses are present:
+
+```bash
+oc get runtimeclass | grep kata
+```
 
 **Expected outcome:**
 - ✓ `kata-cc` runtimeClass listed

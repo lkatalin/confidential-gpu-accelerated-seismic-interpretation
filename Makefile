@@ -379,8 +379,17 @@ setup-trustee-in-cluster:
 	if oc get kataconfig --ignore-not-found 2>/dev/null | grep -q .; then \
 	    echo "WARNING: KataConfig already exists, skipping. No node reboots will be triggered."; \
 	else \
-	    echo "WARNING: Creating KataConfig — nodes will reboot in sequence."; \
-	    oc apply -f helm/osc/templates/kataconfig.yaml; \
+	    WORKER_COUNT=$$(oc get mcp worker \
+	        -o jsonpath='{.status.machineCount}' 2>/dev/null || echo "0"); \
+	    if [ "$$WORKER_COUNT" = "0" ]; then \
+	        echo "WARNING: Single-node cluster detected (worker MCP empty) — using master-pool KataConfig."; \
+	        echo "WARNING: Creating KataConfig — node will reboot (brief cluster outage ~10 min)."; \
+	        oc apply -f helm/osc/templates/kataconfig-sno.yaml; \
+	    else \
+	        echo "WARNING: Multi-node cluster detected — using default KataConfig (kata-oc pool)."; \
+	        echo "WARNING: Creating KataConfig — nodes will reboot in sequence."; \
+	        oc apply -f helm/osc/templates/kataconfig.yaml; \
+	    fi; \
 	fi; \
 	\
 	echo "=== Step 3: Trustee operator ==="; \
@@ -468,21 +477,24 @@ setup-trustee-in-cluster:
 	    -n trustee-operator-system -o jsonpath='{.spec.host}')"; \
 	\
 	echo "=== Step 6: Wait for MachineConfigPool rollout and kata runtimeClasses ==="; \
-	echo "Waiting for MachineConfigPool rollout (up to 30 min)..."; \
+	WORKER_COUNT=$$(oc get mcp worker \
+	    -o jsonpath='{.status.machineCount}' 2>/dev/null || echo "0"); \
+	if [ "$$WORKER_COUNT" = "0" ]; then \
+	    KATA_MCP=master; \
+	else \
+	    KATA_MCP=kata-oc; \
+	fi; \
+	echo "Waiting for MachineConfigPool $$KATA_MCP rollout (up to 30 min)..."; \
 	DEADLINE=$$(( $$(date +%s) + 1800 )); \
 	while [ $$(date +%s) -lt $$DEADLINE ]; do \
-	    if oc get mcp kata-oc --no-headers 2>/dev/null \
+	    if oc get mcp $$KATA_MCP --no-headers 2>/dev/null \
 	            | awk '{print $$3,$$4,$$5}' | grep -q "True False False"; then \
-	        echo "MachineConfigPool kata-oc is updated."; break; \
-	    fi; \
-	    if oc get mcp master --no-headers 2>/dev/null \
-	            | awk '{print $$3,$$4,$$5}' | grep -q "True False False"; then \
-	        echo "MachineConfigPool master is updated."; break; \
+	        echo "MachineConfigPool $$KATA_MCP is updated."; break; \
 	    fi; \
 	    sleep 30; \
 	done; \
 	if [ $$(date +%s) -ge $$DEADLINE ]; then \
-	    echo "ERROR: MachineConfigPool did not complete in 30 min."; \
+	    echo "ERROR: MachineConfigPool $$KATA_MCP did not complete in 30 min."; \
 	    echo "       Run: oc get mcp && oc get nodes"; \
 	    exit 1; \
 	fi; \
