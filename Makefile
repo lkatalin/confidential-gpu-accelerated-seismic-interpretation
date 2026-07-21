@@ -194,15 +194,15 @@ check-prereqs:
 	    else \
 	        CPU_MODEL=$$(oc debug node/$$(oc get nodes -o jsonpath='{.items[0].metadata.name}') \
 	            -- chroot /host grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2 | xargs); \
-	        warn "Intel TDX: ACPI TDEL not found — TDX not yet active in kernel (CPU: $$CPU_MODEL)"; \
-	        warn "       Enable TDX in BIOS then run: make setup-intel-tee"; \
+	        fail "Intel TDX: ACPI TDEL not found — TDX not active in kernel (CPU: $$CPU_MODEL)"; \
+	        fail "       Enable TDX in BIOS (see README hardware prerequisites) then run: make setup-intel-tee"; \
 	    fi; \
 	elif echo "$$CPU_FLAGS" | grep -q ' svm '; then \
 	    ok "AMD SVM (hardware virtualisation) present"; \
 	    if echo "$$CPU_FLAGS" | grep -q ' sev_snp '; then \
 	        ok "AMD SEV-SNP: CPU flag present"; \
 	    else \
-	        warn "AMD SEV-SNP: sev_snp CPU flag not found — enable SNP in BIOS then run: make setup-amd-tee"; \
+	        fail "AMD SEV-SNP: sev_snp CPU flag not found — enable SNP in BIOS then run: make setup-amd-tee"; \
 	    fi; \
 	else \
 	    fail "No VMX or SVM CPU flag — node does not support hardware virtualisation"; \
@@ -210,7 +210,7 @@ check-prereqs:
 	\
 	echo ""; \
 	echo "=== Required operators ==="; \
-	if oc get csv -n cert-manager-operator 2>/dev/null | grep -q "Succeeded"; then \
+	if oc get csv -n openshift-cert-manager-operator 2>/dev/null | grep -q "Succeeded"; then \
 	    ok "cert-manager operator: installed"; \
 	elif oc get csv -A 2>/dev/null | grep -qi "cert-manager.*Succeeded"; then \
 	    ok "cert-manager operator: installed (non-standard namespace)"; \
