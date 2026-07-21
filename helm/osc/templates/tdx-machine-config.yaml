@@ -1,0 +1,23 @@
+# Enables Intel TDX in the kernel and loads the vsock-loopback module required
+# by the kata agent for host-guest communication.
+# Default role: master (single-node / SNO).  For multi-node clusters where
+# kata workloads run on worker nodes, change the role label to "worker".
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  name: 99-enable-intel-tdx
+  labels:
+    machineconfiguration.openshift.io/role: master
+spec:
+  config:
+    ignition:
+      version: 3.5.0
+    storage:
+      files:
+        - path: /etc/modules-load.d/vsock.conf
+          mode: 0644
+          contents:
+            source: "data:,vsock-loopback%0A"
+  kernelArguments:
+    - kvm_intel.tdx=1
+    - nohibernate

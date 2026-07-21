@@ -82,7 +82,12 @@ help:
 	@echo "    push-app         - Push the application image to the registry"
 	@echo ""
 	@echo "  Attestation (cluster-admin, run once per cluster before install):"
-	@echo "    setup-trustee-in-cluster - Install NFD, OSC (kata), and Trustee KBS on the cluster"
+	@echo "    setup-intel-tee          - Apply Intel TDX kernel parameters and verify TEE detection"
+	@echo "                               Run after enabling TDX in server BIOS (see README)"
+	@echo "    setup-amd-tee            - Apply AMD SEV-SNP IOMMU parameters and verify TEE detection"
+	@echo "                               Run after enabling SNP in server BIOS (see README)"
+	@echo "    setup-trustee-in-cluster - Install OSC (kata) and Trustee KBS on the cluster"
+	@echo "                               Requires setup-intel-tee or setup-amd-tee to have run first"
 	@echo "    setup-attestation        - Register model key, cosign key, and image policy with KBS"
 	@echo "                               (requires NAMESPACE, MODEL_ENCRYPTION_KEY, cosign.pub)"
 	@echo ""
@@ -315,10 +320,167 @@ uninstall:
 	helm uninstall seismic-app -n $(NAMESPACE) --ignore-not-found
 	@echo "seismic-app uninstalled from $(NAMESPACE)"
 
+.PHONY: setup-intel-tee
+setup-intel-tee:
+	@set -e; \
+	echo "=== setup-intel-tee: Intel TDX kernel parameters and TEE detection ==="; \
+	echo "=== Step 1: TDX and IOMMU kernel parameters ==="; \
+	WORKER_COUNT=$$(oc get mcp worker \
+	    -o jsonpath='{.status.machineCount}' 2>/dev/null || echo "0"); \
+	if [ "$$WORKER_COUNT" != "0" ]; then \
+	    echo "WARNING: Multi-node cluster detected."; \
+	    echo "         MachineConfigs target master role by default — for worker nodes running kata,"; \
+	    echo "         edit helm/osc/templates/tdx-machine-config.yaml and"; \
+	    echo "         helm/osc/templates/iommu-machine-config.yaml to set role: worker, then apply manually."; \
+	else \
+	    NEEDS_REBOOT=false; \
+	    if oc get mc 99-enable-intel-tdx --ignore-not-found 2>/dev/null | grep -q .; then \
+	        echo "WARNING: TDX MachineConfig already exists, skipping."; \
+	    else \
+	        oc apply -f helm/osc/templates/tdx-machine-config.yaml; \
+	        NEEDS_REBOOT=true; \
+	    fi; \
+	    if oc get mc 100-iommu-kernel-args --ignore-not-found 2>/dev/null | grep -q .; then \
+	        echo "WARNING: IOMMU MachineConfig already exists, skipping."; \
+	    else \
+	        oc apply -f helm/osc/templates/iommu-machine-config.yaml; \
+	        NEEDS_REBOOT=true; \
+	    fi; \
+	    if [ "$$NEEDS_REBOOT" = "true" ]; then \
+	        echo "WARNING: Node will now reboot to apply kernel parameters (~10 min)."; \
+	        echo "         API server will be briefly unreachable during the reboot."; \
+	        sleep 30; \
+	        DEADLINE=$$(( $$(date +%s) + 1200 )); \
+	        until oc get mcp master --no-headers 2>/dev/null \
+	                | awk '{print $$3,$$4,$$5}' | grep -q "True False False"; do \
+	            if [ $$(date +%s) -ge $$DEADLINE ]; then \
+	                echo "ERROR: master MCP did not complete reboot in 20 min."; \
+	                echo "       Run: oc get mcp master && oc get nodes"; \
+	                exit 1; \
+	            fi; \
+	            sleep 15; \
+	        done; \
+	        echo "Node reboot complete."; \
+	    fi; \
+	fi; \
+	\
+	echo "=== Step 2: Node Feature Discovery ==="; \
+	if oc get csv -n openshift-nfd 2>/dev/null \
+	        | grep -q "nfd.*Succeeded"; then \
+	    echo "WARNING: NFD operator already installed, skipping."; \
+	else \
+	    echo "Installing Node Feature Discovery operator..."; \
+	    oc apply -f helm/osc/templates/nfd-namespace.yaml; \
+	    oc apply -f helm/osc/templates/nfd-operatorgroup.yaml; \
+	    oc apply -f helm/osc/templates/nfd-subscription.yaml; \
+	    until oc get csv -n openshift-nfd 2>/dev/null \
+	            | grep -q "nfd.*Succeeded"; do sleep 10; done; \
+	    echo "NFD operator ready."; \
+	fi; \
+	if oc get nodefeaturediscovery -n openshift-nfd \
+	        --ignore-not-found 2>/dev/null | grep -q .; then \
+	    echo "WARNING: NodeFeatureDiscovery CR already exists, skipping."; \
+	else \
+	    oc apply -f helm/osc/templates/nfd-instance.yaml; \
+	fi; \
+	echo "Waiting for NFD worker pods to be ready..."; \
+	oc rollout status daemonset/nfd-worker -n openshift-nfd --timeout=5m 2>/dev/null || true; \
+	if oc get nodefeaturerule tdx-features -n openshift-nfd \
+	        --ignore-not-found 2>/dev/null | grep -q .; then \
+	    echo "WARNING: NodeFeatureRule tdx-features already exists, skipping."; \
+	else \
+	    oc apply -f helm/osc/templates/node-feature-rule.yaml; \
+	    echo "NodeFeatureRule applied."; \
+	fi; \
+	echo "Verifying intel.feature.node.kubernetes.io/tdx label..."; \
+	if oc get node -o jsonpath='{.items[*].metadata.labels}' 2>/dev/null \
+	        | grep -q "intel.feature.node.kubernetes.io/tdx"; then \
+	    echo "TEE label detected: intel.feature.node.kubernetes.io/tdx"; \
+	    echo "=== setup-intel-tee complete — run make setup-trustee-in-cluster next ==="; \
+	else \
+	    echo "ERROR: intel.feature.node.kubernetes.io/tdx label not found."; \
+	    echo "       Verify BIOS settings — TDX, TME, and TME-MT must all be enabled."; \
+	    echo "       See README hardware prerequisite section."; \
+	    exit 1; \
+	fi
+
+.PHONY: setup-amd-tee
+setup-amd-tee:
+	@set -e; \
+	echo "=== setup-amd-tee: AMD SEV-SNP IOMMU parameters and TEE detection ==="; \
+	echo "=== Step 1: IOMMU kernel parameters ==="; \
+	WORKER_COUNT=$$(oc get mcp worker \
+	    -o jsonpath='{.status.machineCount}' 2>/dev/null || echo "0"); \
+	if [ "$$WORKER_COUNT" != "0" ]; then \
+	    echo "WARNING: Multi-node cluster detected."; \
+	    echo "         IOMMU MachineConfig targets master role by default — for worker nodes running kata,"; \
+	    echo "         edit helm/osc/templates/iommu-machine-config.yaml to set role: worker, then apply manually."; \
+	else \
+	    if oc get mc 100-iommu-kernel-args --ignore-not-found 2>/dev/null | grep -q .; then \
+	        echo "WARNING: IOMMU MachineConfig already exists, skipping."; \
+	    else \
+	        oc apply -f helm/osc/templates/iommu-machine-config.yaml; \
+	        echo "WARNING: Node will now reboot to apply IOMMU parameters (~10 min)."; \
+	        echo "         API server will be briefly unreachable during the reboot."; \
+	        sleep 30; \
+	        DEADLINE=$$(( $$(date +%s) + 1200 )); \
+	        until oc get mcp master --no-headers 2>/dev/null \
+	                | awk '{print $$3,$$4,$$5}' | grep -q "True False False"; do \
+	            if [ $$(date +%s) -ge $$DEADLINE ]; then \
+	                echo "ERROR: master MCP did not complete reboot in 20 min."; \
+	                echo "       Run: oc get mcp master && oc get nodes"; \
+	                exit 1; \
+	            fi; \
+	            sleep 15; \
+	        done; \
+	        echo "Node reboot complete."; \
+	    fi; \
+	fi; \
+	\
+	echo "=== Step 2: Node Feature Discovery ==="; \
+	if oc get csv -n openshift-nfd 2>/dev/null \
+	        | grep -q "nfd.*Succeeded"; then \
+	    echo "WARNING: NFD operator already installed, skipping."; \
+	else \
+	    echo "Installing Node Feature Discovery operator..."; \
+	    oc apply -f helm/osc/templates/nfd-namespace.yaml; \
+	    oc apply -f helm/osc/templates/nfd-operatorgroup.yaml; \
+	    oc apply -f helm/osc/templates/nfd-subscription.yaml; \
+	    until oc get csv -n openshift-nfd 2>/dev/null \
+	            | grep -q "nfd.*Succeeded"; do sleep 10; done; \
+	    echo "NFD operator ready."; \
+	fi; \
+	if oc get nodefeaturediscovery -n openshift-nfd \
+	        --ignore-not-found 2>/dev/null | grep -q .; then \
+	    echo "WARNING: NodeFeatureDiscovery CR already exists, skipping."; \
+	else \
+	    oc apply -f helm/osc/templates/nfd-instance.yaml; \
+	fi; \
+	echo "Waiting for NFD worker pods to be ready..."; \
+	oc rollout status daemonset/nfd-worker -n openshift-nfd --timeout=5m 2>/dev/null || true; \
+	if oc get nodefeaturerule tdx-features -n openshift-nfd \
+	        --ignore-not-found 2>/dev/null | grep -q .; then \
+	    echo "WARNING: NodeFeatureRule tdx-features already exists, skipping."; \
+	else \
+	    oc apply -f helm/osc/templates/node-feature-rule.yaml; \
+	    echo "NodeFeatureRule applied."; \
+	fi; \
+	echo "Verifying amd.feature.node.kubernetes.io/snp label..."; \
+	if oc get node -o jsonpath='{.items[*].metadata.labels}' 2>/dev/null \
+	        | grep -q "amd.feature.node.kubernetes.io/snp"; then \
+	    echo "TEE label detected: amd.feature.node.kubernetes.io/snp"; \
+	    echo "=== setup-amd-tee complete — run make setup-trustee-in-cluster next ==="; \
+	else \
+	    echo "ERROR: amd.feature.node.kubernetes.io/snp label not found."; \
+	    echo "       Verify BIOS settings — SEV-SNP must be enabled in server firmware."; \
+	    echo "       See README hardware prerequisite section."; \
+	    exit 1; \
+	fi
+
 .PHONY: setup-trustee-in-cluster
 setup-trustee-in-cluster:
 	@set -e; \
-	echo "=== Pre-flight: checking NVIDIA GPU Operator ==="; \
+	echo "=== Pre-flight checks ==="; \
 	if ! oc get csv -n nvidia-gpu-operator 2>/dev/null \
 	        | grep -q "gpu-operator.*Succeeded"; then \
 	    echo "ERROR: NVIDIA GPU Operator not found (namespace: nvidia-gpu-operator)."; \
@@ -326,6 +488,15 @@ setup-trustee-in-cluster:
 	    exit 1; \
 	fi; \
 	echo "GPU Operator: OK"; \
+	if ! oc get node -o jsonpath='{.items[*].metadata.labels}' 2>/dev/null \
+	        | grep -qE "intel\.feature\.node\.kubernetes\.io/tdx|amd\.feature\.node\.kubernetes\.io/snp"; then \
+	    echo "ERROR: No TEE platform label found on cluster nodes."; \
+	    echo "       Enable TDX or SNP in server BIOS, then run:"; \
+	    echo "         make setup-intel-tee   (Intel Xeon with TDX)"; \
+	    echo "         make setup-amd-tee     (AMD EPYC with SEV-SNP)"; \
+	    exit 1; \
+	fi; \
+	echo "TEE label: OK"; \
 	\
 	echo "=== Step 1: Node Feature Discovery ==="; \
 	if oc get csv -n openshift-nfd 2>/dev/null \

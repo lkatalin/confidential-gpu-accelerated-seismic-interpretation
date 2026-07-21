@@ -17,16 +17,18 @@ AI-powered rock type classification from North Sea seismic data — running with
 - [Deploy](#deploy)
   - [Clone the repository](#clone-the-repository)
   - [Part 1: Platform setup (cluster-admin, once per cluster)](#part-1-platform-setup-cluster-admin-once-per-cluster)
-    - [Step 1: Install Node Feature Discovery](#step-1-install-node-feature-discovery)
-    - [Step 2: Install OpenShift Sandboxed Containers](#step-2-install-openshift-sandboxed-containers)
-    - [Step 3: Install the Trustee operator](#step-3-install-the-trustee-operator)
-    - [Step 3a: Create the kbs-auth-public-key Secret](#step-3a-create-the-kbs-auth-public-key-secret)
-    - [Step 3b: Create the trustee-tls-cert Secret](#step-3b-create-the-trustee-tls-cert-secret)
-    - [Step 4: Deploy KBS](#step-4-deploy-kbs)
-    - [Step 5: Verify the KBS route](#step-5-verify-the-kbs-route)
-    - [Step 6: Configure the attestation policy](#step-6-configure-the-attestation-policy)
-    - [Step 7: Confirm kata runtimeClass is available](#step-7-confirm-kata-runtimeclass-is-available)
-    - [Step 8: Register app-specific secrets with KBS](#step-8-register-app-specific-secrets-with-kbs)
+    - [Hardware prerequisite: Enable TEE in server firmware](#hardware-prerequisite-enable-tee-in-server-firmware)
+    - [Step 1: Enable TEE kernel parameters](#step-1-enable-tee-kernel-parameters)
+    - [Step 2: Install Node Feature Discovery](#step-2-install-node-feature-discovery)
+    - [Step 3: Install OpenShift Sandboxed Containers](#step-3-install-openshift-sandboxed-containers)
+    - [Step 4: Install the Trustee operator](#step-4-install-the-trustee-operator)
+    - [Step 4a: Create the kbs-auth-public-key Secret](#step-4a-create-the-kbs-auth-public-key-secret)
+    - [Step 4b: Create the trustee-tls-cert Secret](#step-4b-create-the-trustee-tls-cert-secret)
+    - [Step 5: Deploy KBS](#step-5-deploy-kbs)
+    - [Step 6: Verify the KBS route](#step-6-verify-the-kbs-route)
+    - [Step 7: Configure the attestation policy](#step-7-configure-the-attestation-policy)
+    - [Step 8: Confirm kata runtimeClass is available](#step-8-confirm-kata-runtimeclass-is-available)
+    - [Step 9: Register app-specific secrets with KBS](#step-9-register-app-specific-secrets-with-kbs)
   - [Part 2: Application deployment (namespace admin)](#part-2-application-deployment-namespace-admin)
     - [Step 1: Create the project](#step-1-create-the-project)
     - [Step 2: Deploy the application](#step-2-deploy-the-application)
@@ -244,17 +246,132 @@ Sample `.npy` seismic sections from the Dutch F3 dataset are included in the `sa
 
 ### Part 1: Platform setup (cluster-admin, once per cluster)
 
-This is a cluster-admin, once-per-cluster operation. Run `make setup-trustee-in-cluster` to perform all steps automatically, or follow the manual steps below using the OpenShift web console.
+This is a cluster-admin, once-per-cluster operation. To perform all steps automatically:
 
-OSC is installed first so that node reboots run in parallel while the Trustee operator and KBS are being configured, reducing total setup time.
+```bash
+# 1. After enabling TDX/SNP in server BIOS (see hardware prerequisite below):
+make setup-intel-tee    # Intel Xeon with TDX
+# or
+make setup-amd-tee      # AMD EPYC with SEV-SNP
+
+# 2. After setup-intel-tee / setup-amd-tee completes:
+make setup-trustee-in-cluster
+```
+
+Or follow the manual steps below using the OpenShift web console and `oc` commands.
 
 **Prerequisites:**
 - Logged in as cluster-admin
 - NVIDIA GPU Operator already installed (verify: **Operators → Installed Operators → namespace `nvidia-gpu-operator` → status Succeeded**)
+- TEE enabled in server firmware (see hardware prerequisite below)
 
-#### Step 1: Install Node Feature Discovery
+#### Hardware prerequisite: Enable TEE in server firmware
 
-NFD labels cluster nodes with hardware capabilities (GPU, CPU features). This is required for GPU workloads and for the `kata-cc-nvidia-gpu` runtimeClass that OSC creates.
+Confidential containers require a hardware Trusted Execution Environment (TEE). This is a one-time server configuration done via your BMC/IPMI console by whoever manages the bare metal hosts. It must be completed before running any of the steps below.
+
+**Intel TDX (Intel Xeon Scalable 4th Gen / Sapphire Rapids or later)**
+
+Access the BIOS setup utility via your BMC/IPMI console. Navigate to **Socket Configuration → Processor Configuration** and set:
+
+| Setting | Required value | Notes |
+|---|---|---|
+| Memory Encryption (TME) | Enabled | Required by TDX |
+| Total Memory Encryption Multi-Tenant (TME-MT) | Enabled | Required by TDX |
+| Trust Domain Extension (TDX) | Enabled | |
+| TDX Secure Arbitration Mode Loader (SEAM Loader) | Enabled | |
+| TME-MT/TDX key split | Any non-zero value (e.g. 32) | Sets how many concurrent TDX VMs are supported |
+| SW Guard Extensions (SGX) | Enabled | Required for TDX attestation infrastructure |
+| SGX Factory Reset | Enabled | Required for remote attestation |
+
+Save and reboot the server. Full Intel hardware setup guide: https://cc-enabling.trustedservices.intel.com/intel-tdx-enabling-guide/04/hardware_setup/
+
+After the server comes back, verify TDX is active:
+
+```bash
+oc debug node/<node-name> -- chroot /host dmesg | grep -i tdx
+```
+
+Expected output includes `virt/tdx: BIOS enabled` and `virt/tdx: module initialized`. If you see no tdx lines, the BIOS settings were not saved correctly.
+
+**AMD SEV-SNP (AMD EPYC)**
+
+Access the BIOS setup utility and enable SEV-SNP under the memory/security settings (path varies by server vendor — consult your server's BIOS reference manual). Verify with:
+
+```bash
+oc debug node/<node-name> -- chroot /host dmesg | grep -i snp
+```
+
+#### Step 1: Enable TEE kernel parameters
+
+The node must boot with TDX kernel parameters active before the OSC operator can install kata-cc. This step applies two MachineConfigs and triggers a node reboot.
+
+> **NOTE for multi-node clusters:** The MachineConfigs below use `role: master`. On multi-node clusters where kata workloads run on worker nodes, change `machineconfiguration.openshift.io/role: master` to `worker` in both blocks before applying.
+
+> **NOTE for AMD SEV-SNP clusters:** Skip the TDX block. Apply only the IOMMU block — SNP is enabled entirely via BIOS with no additional kernel parameters.
+
+Apply the TDX kernel parameters (Intel only):
+
+```bash
+oc apply -f - <<'EOF'
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  name: 99-enable-intel-tdx
+  labels:
+    machineconfiguration.openshift.io/role: master
+spec:
+  config:
+    ignition:
+      version: 3.5.0
+    storage:
+      files:
+        - path: /etc/modules-load.d/vsock.conf
+          mode: 0644
+          contents:
+            source: "data:,vsock-loopback%0A"
+  kernelArguments:
+    - kvm_intel.tdx=1
+    - nohibernate
+EOF
+```
+
+Apply the IOMMU passthrough parameters (required for GPU passthrough to kata VMs):
+
+```bash
+oc apply -f - <<'EOF'
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  name: 100-iommu-kernel-args
+  labels:
+    machineconfiguration.openshift.io/role: master
+spec:
+  kernelArguments:
+    - intel_iommu=on
+    - amd_iommu=on
+    - iommu=pt
+EOF
+```
+
+Wait for the node to reboot and return to Ready:
+
+```bash
+# Single-node — API server will be briefly unreachable during reboot:
+oc get mcp master -w
+```
+
+On single-node clusters the API server itself reboots, so the watch will disconnect for 2–5 minutes. Re-run `oc get mcp master` once the cluster is reachable again. Wait until `UPDATED=True`, `UPDATING=False`, `DEGRADED=False`.
+
+After the node comes back, verify TDX is active in the kernel:
+
+```bash
+oc debug node/<node-name> -- chroot /host dmesg | grep -i tdx
+# Expected: "virt/tdx: BIOS enabled" and "virt/tdx: module initialized"
+```
+
+#### Step 2: Install Node Feature Discovery
+
+NFD labels cluster nodes with hardware capabilities (GPU, CPU features, and TEE type). Installing NFD after the TDX kernel parameters are active means it detects TDX immediately on first run. This is required for GPU workloads, for the `kata-cc-nvidia-gpu` runtimeClass that OSC creates, and for the OSC operator to detect which TEE platform is present.
 
 1. Go to **Operators → OperatorHub**
 2. Search for "Node Feature Discovery"
@@ -263,8 +380,93 @@ NFD labels cluster nodes with hardware capabilities (GPU, CPU features). This is
 5. Go to **Operators → Installed Operators**, select namespace `openshift-nfd`, wait until the status shows **Succeeded**
 6. Click **Node Feature Discovery Operator**, click the **NodeFeatureDiscovery** tab
 7. Click **Create NodeFeatureDiscovery**, accept the defaults, click **Create**
+8. Apply the NodeFeatureRule that teaches NFD to detect TDX, SEV-SNP, SGX, and kata capabilities:
 
-#### Step 2: Install OpenShift Sandboxed Containers
+```bash
+oc apply -f - <<'EOF'
+apiVersion: nfd.openshift.io/v1alpha1
+kind: NodeFeatureRule
+metadata:
+  name: tdx-features
+  namespace: openshift-nfd
+spec:
+  rules:
+    - name: "runtime.kata"
+      labels:
+        feature.node.kubernetes.io/runtime.kata: "true"
+      matchAny:
+        - matchFeatures:
+            - feature: cpu.cpuid
+              matchExpressions:
+                SSE42: { op: Exists }
+                VMX: { op: Exists }
+            - feature: kernel.loadedmodule
+              matchExpressions:
+                kvm: { op: Exists }
+                kvm_intel: { op: Exists }
+        - matchFeatures:
+            - feature: cpu.cpuid
+              matchExpressions:
+                SSE42: { op: Exists }
+                SVM: { op: Exists }
+            - feature: kernel.loadedmodule
+              matchExpressions:
+                kvm: { op: Exists }
+                kvm_amd: { op: Exists }
+    - name: "amd.sev-snp"
+      labels:
+        amd.feature.node.kubernetes.io/snp: "true"
+      extendedResources:
+        sev-snp.amd.com/esids: "@cpu.security.sev.encrypted_state_ids"
+      matchFeatures:
+        - feature: cpu.cpuid
+          matchExpressions:
+            SVM: { op: Exists }
+        - feature: cpu.security
+          matchExpressions:
+            sev.snp.enabled: { op: Exists }
+    - name: "intel.sgx"
+      labels:
+        intel.feature.node.kubernetes.io/sgx: "true"
+      extendedResources:
+        sgx.intel.com/epc: "@cpu.security.sgx.epc"
+      matchFeatures:
+        - feature: cpu.cpuid
+          matchExpressions:
+            SGX: { op: Exists }
+            SGXLC: { op: Exists }
+        - feature: cpu.security
+          matchExpressions:
+            sgx.enabled: { op: IsTrue }
+        - feature: kernel.config
+          matchExpressions:
+            X86_SGX: { op: Exists }
+    - name: "intel.tdx"
+      labels:
+        intel.feature.node.kubernetes.io/tdx: "true"
+      extendedResources:
+        tdx.intel.com/keys: "@cpu.security.tdx.total_keys"
+      matchFeatures:
+        - feature: cpu.cpuid
+          matchExpressions:
+            VMX: { op: Exists }
+        - feature: cpu.security
+          matchExpressions:
+            tdx.enabled: { op: Exists }
+EOF
+```
+
+Verify NFD has labeled the node with the TEE platform:
+
+```bash
+oc get node <node-name> --show-labels | tr ',' '\n' | grep -E "tdx|snp"
+# Expected: intel.feature.node.kubernetes.io/tdx= (Intel)
+#        or amd.feature.node.kubernetes.io/snp=   (AMD)
+```
+
+If the label is not present, the BIOS settings are not correctly saved — revisit the hardware prerequisite section.
+
+#### Step 3: Install OpenShift Sandboxed Containers
 
 > **NOTE:** If KBS and the app run on separate clusters, perform this step on the app cluster, not the KBS cluster. The KBS cluster does not need OSC.
 
@@ -342,9 +544,9 @@ Go to **Compute → MachineConfigPools**:
 - **Single-node**: the `master` pool will show `UPDATING=True` then `UPDATED=True`. The node will reboot once — expect ~10 minutes of cluster unavailability.
 - **Multi-node**: a new `kata-oc` pool appears and nodes reboot one at a time (10–20 minutes total).
 
-You do not need to wait here; continue to Step 3 while reboots proceed in the background. Step 7 confirms the rollout is complete.
+You do not need to wait here; continue to Step 4 while reboots proceed in the background. Step 8 confirms the rollout is complete.
 
-#### Step 3: Install the Trustee operator
+#### Step 4: Install the Trustee operator
 
 1. Go to **Operators → OperatorHub**
 2. Search for "trustee"
@@ -357,7 +559,7 @@ You do not need to wait here; continue to Step 3 while reboots proceed in the ba
 9. Click **Install**, then go to **Operators → Installed Operators**, select namespace `trustee-operator-system`, click **Upgrade available** and approve the InstallPlan
 10. Wait until the status shows **Succeeded**
 
-#### Step 3a: Create the kbs-auth-public-key Secret
+#### Step 4a: Create the kbs-auth-public-key Secret
 
 KBS will not start without an Ed25519 key pair. Run this once from any machine with `oc` access:
 
@@ -372,7 +574,7 @@ rm /tmp/kbs-private.pem /tmp/kbs-public.pem
 
 The private key is discarded immediately — KBS only needs the public key to verify client attestation tokens.
 
-#### Step 3b: Create the cert-manager Issuer and TLS Certificates
+#### Step 4b: Create the cert-manager Issuer and TLS Certificates
 
 The Trustee operator requires `trustee-tls-cert` and `trustee-token-cert` Secrets to exist before it will deploy KBS. These are issued by cert-manager in response to `Issuer` and `Certificate` resources that must be created before `TrusteeConfig` is applied.
 
@@ -386,7 +588,7 @@ The script creates a self-signed `Issuer`, an RSA `Certificate` for KBS HTTPS (s
 
 The `trustee-tls-cert` certificate is also embedded in the initdata blob by `make install` — the Confidential Data Hub inside the kata VM uses it to verify the KBS TLS connection.
 
-#### Step 4: Deploy KBS
+#### Step 5: Deploy KBS
 
 1. Go to **Operators → Installed Operators**, select namespace `trustee-operator-system`
 2. Click **Trustee Operator**, then click the **TrusteeConfig** tab
@@ -411,15 +613,15 @@ spec:
 5. Click **Create**
 6. Go to **Workloads → Pods**, select namespace `trustee-operator-system`, and wait for `trustee-deployment-*` to show **Running**
 
-#### Step 5: Verify the KBS route
+#### Step 6: Verify the KBS route
 
-The Trustee operator creates a passthrough TLS Route named `kbs-route` automatically when it processes the TrusteeConfig. Verify it exists and note its hostname — you will need it in Step 8:
+The Trustee operator creates a passthrough TLS Route named `kbs-route` automatically when it processes the TrusteeConfig. Verify it exists and note its hostname — you will need it in Step 9:
 
 ```bash
 oc get route kbs-route -n trustee-operator-system -o jsonpath='{.spec.host}'
 ```
 
-#### Step 6: Configure the attestation policy
+#### Step 7: Configure the attestation policy
 
 The Trustee operator created a KbsConfig named `trusteeconfig-kbs-config` when it processed the TrusteeConfig above. Apply the ConfigMaps first, then update KbsConfig to reference them.
 
@@ -515,9 +717,9 @@ EOF
 ```
 5. Go to **Workloads → Pods** and wait for `trustee-deployment-*` to restart and return to **Running**
 
-#### Step 7: Confirm kata runtimeClass is available
+#### Step 8: Confirm kata runtimeClass is available
 
-By now the node reboots started in Step 2 (KataConfig) should be complete or close to finishing.
+By now the node reboots started in Step 3 (KataConfig) should be complete or close to finishing.
 
 1. Check the MachineConfigPool for your cluster type:
 
@@ -541,9 +743,9 @@ oc get runtimeclass | grep kata
 - ✓ `kata-cc` runtimeClass listed
 - ✓ `kata-cc-nvidia-gpu` runtimeClass listed
 
-#### Step 8: Register app-specific secrets with KBS
+#### Step 9: Register app-specific secrets with KBS
 
-The KBS has no web UI for secret registration. These three `curl` commands register the model key, cosign public key, and image verification policy directly against the KBS REST API. Get the KBS route hostname from Step 5, then run from a terminal with `MODEL_ENCRYPTION_KEY` set and `cosign.pub` present:
+The KBS has no web UI for secret registration. These three `curl` commands register the model key, cosign public key, and image verification policy directly against the KBS REST API. Get the KBS route hostname from Step 6, then run from a terminal with `MODEL_ENCRYPTION_KEY` set and `cosign.pub` present:
 
 ```bash
 KBS_ROUTE=$(oc get route kbs-route -n trustee-operator-system -o jsonpath='{.spec.host}')
@@ -568,7 +770,7 @@ printf '{"default":[{"type":"reject"}],"transports":{"docker":{"%s":[{"type":"si
 
 Or equivalently: `make setup-attestation NAMESPACE=$NAMESPACE KBS_URL=https://$KBS_ROUTE`
 
-> `make setup-trustee-in-cluster` runs Steps 1–7 automatically. `make setup-attestation` performs Step 8.
+> `make setup-intel-tee` (or `make setup-amd-tee`) runs Steps 1–2. `make setup-trustee-in-cluster` runs Steps 3–8 automatically. `make setup-attestation` performs Step 9.
 
 ---
 
