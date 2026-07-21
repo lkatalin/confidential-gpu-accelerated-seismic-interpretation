@@ -81,6 +81,10 @@ help:
 	@echo "    build-app        - Build the Gradio application container image"
 	@echo "    push-app         - Push the application image to the registry"
 	@echo ""
+	@echo "  Prerequisites:"
+	@echo "    check-prereqs    - Verify OpenShift version, CPU TEE support, required operators,"
+	@echo "                       kernel parameters, and local tools (oc, helm, cosign, etc.)"
+	@echo ""
 	@echo "  Attestation (cluster-admin, run once per cluster before install):"
 	@echo "    setup-intel-tee          - Apply Intel TDX kernel parameters and verify TEE detection"
 	@echo "                               Run after enabling TDX in server BIOS (see README)"
@@ -121,6 +125,151 @@ help:
 	@echo "  APP_QUAY_REPO          - App repository name (default: conf-gpu-accel-seismic-interp-deepseismic-app)"
 	@echo "  APP_TAG                - App image tag (auto: $(BASE_VERSION) on main, $(BASE_VERSION)-dev elsewhere)"
 	@echo "  APP_IMG                - Full app image ref (default: \$${REGISTRY}/\$${APP_QUAY_REPO}:\$${APP_TAG})"
+
+.PHONY: check-prereqs
+check-prereqs:
+	@PASS=0; FAIL=0; WARN=0; \
+	ok()   { echo "  [PASS] $$1"; PASS=$$((PASS+1)); }; \
+	fail() { echo "  [FAIL] $$1"; FAIL=$$((FAIL+1)); }; \
+	warn() { echo "  [WARN] $$1"; WARN=$$((WARN+1)); }; \
+	\
+	echo ""; \
+	echo "=== Local tools ==="; \
+	for tool in oc helm cosign openssl curl base64 python3; do \
+	    if command -v $$tool >/dev/null 2>&1; then \
+	        ok "$$tool found: $$(command -v $$tool)"; \
+	    else \
+	        fail "$$tool not found — install it before continuing"; \
+	    fi; \
+	done; \
+	\
+	echo ""; \
+	echo "=== OpenShift cluster ==="; \
+	if ! oc whoami >/dev/null 2>&1; then \
+	    fail "Not logged in to OpenShift — run 'oc login' first"; \
+	    echo ""; \
+	    echo "Cannot check cluster requirements without an active login. Exiting."; \
+	    exit 1; \
+	fi; \
+	ok "Logged in as: $$(oc whoami)"; \
+	\
+	OCP_VERSION=$$(oc get clusterversion version \
+	    -o jsonpath='{.status.desired.version}' 2>/dev/null || echo "unknown"); \
+	REQUIRED="4.21.9"; \
+	if [ "$$OCP_VERSION" = "unknown" ]; then \
+	    fail "Could not determine OpenShift version"; \
+	else \
+	    NEWER=$$(printf '%s\n%s\n' "$$REQUIRED" "$$OCP_VERSION" | sort -V | tail -1); \
+	    if [ "$$NEWER" = "$$OCP_VERSION" ] && [ "$$OCP_VERSION" != "$$REQUIRED" ]; then \
+	        ok "OpenShift version $$OCP_VERSION >= $$REQUIRED"; \
+	    elif [ "$$OCP_VERSION" = "$$REQUIRED" ]; then \
+	        ok "OpenShift version $$OCP_VERSION == $$REQUIRED"; \
+	    else \
+	        fail "OpenShift version $$OCP_VERSION < $$REQUIRED (required for OSC 1.12 confidential containers)"; \
+	    fi; \
+	fi; \
+	\
+	if oc auth can-i create machineconfig >/dev/null 2>&1; then \
+	    ok "cluster-admin: can create MachineConfig"; \
+	else \
+	    fail "Insufficient permissions — cluster-admin role required"; \
+	fi; \
+	\
+	NODE_ARCH=$$(oc get nodes -o jsonpath='{.items[0].status.nodeInfo.architecture}' 2>/dev/null); \
+	if [ "$$NODE_ARCH" = "amd64" ]; then \
+	    ok "Node architecture: x86_64 (amd64)"; \
+	else \
+	    fail "Node architecture: $$NODE_ARCH — confidential containers require x86_64"; \
+	fi; \
+	\
+	echo ""; \
+	echo "=== CPU TEE capability ==="; \
+	CPU_FLAGS=$$(oc debug node/$$(oc get nodes -o jsonpath='{.items[0].metadata.name}') \
+	    -- chroot /host grep -m1 '^flags' /proc/cpuinfo 2>/dev/null); \
+	if echo "$$CPU_FLAGS" | grep -q ' vmx '; then \
+	    ok "Intel VMX (hardware virtualisation) present"; \
+	    if oc debug node/$$(oc get nodes -o jsonpath='{.items[0].metadata.name}') \
+	            -- chroot /host grep -rq 'tdx' /sys/firmware/acpi/tables/TDEL 2>/dev/null; then \
+	        ok "Intel TDX: ACPI TDEL table found (TDX active)"; \
+	    else \
+	        CPU_MODEL=$$(oc debug node/$$(oc get nodes -o jsonpath='{.items[0].metadata.name}') \
+	            -- chroot /host grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2 | xargs); \
+	        warn "Intel TDX: ACPI TDEL not found — TDX not yet active in kernel (CPU: $$CPU_MODEL)"; \
+	        warn "       Enable TDX in BIOS then run: make setup-intel-tee"; \
+	    fi; \
+	elif echo "$$CPU_FLAGS" | grep -q ' svm '; then \
+	    ok "AMD SVM (hardware virtualisation) present"; \
+	    if echo "$$CPU_FLAGS" | grep -q ' sev_snp '; then \
+	        ok "AMD SEV-SNP: CPU flag present"; \
+	    else \
+	        warn "AMD SEV-SNP: sev_snp CPU flag not found — enable SNP in BIOS then run: make setup-amd-tee"; \
+	    fi; \
+	else \
+	    fail "No VMX or SVM CPU flag — node does not support hardware virtualisation"; \
+	fi; \
+	\
+	echo ""; \
+	echo "=== Required operators ==="; \
+	if oc get csv -n cert-manager-operator 2>/dev/null | grep -q "Succeeded"; then \
+	    ok "cert-manager operator: installed"; \
+	elif oc get csv -A 2>/dev/null | grep -qi "cert-manager.*Succeeded"; then \
+	    ok "cert-manager operator: installed (non-standard namespace)"; \
+	else \
+	    fail "cert-manager operator not found — required for KBS TLS certificates"; \
+	fi; \
+	\
+	if oc get csv -n nvidia-gpu-operator 2>/dev/null | grep -q "gpu-operator.*Succeeded"; then \
+	    ok "NVIDIA GPU Operator: installed"; \
+	else \
+	    warn "NVIDIA GPU Operator not found — kata-cc-nvidia-gpu runtimeClass will not be created"; \
+	fi; \
+	\
+	if oc get csv -n openshift-nfd 2>/dev/null | grep -q "nfd.*Succeeded"; then \
+	    ok "Node Feature Discovery: installed"; \
+	else \
+	    warn "Node Feature Discovery not installed — run make setup-intel-tee or make setup-amd-tee"; \
+	fi; \
+	\
+	if oc get csv -n openshift-sandboxed-containers-operator 2>/dev/null \
+	        | grep -q "sandboxed-containers.*Succeeded"; then \
+	    ok "OpenShift Sandboxed Containers: installed"; \
+	else \
+	    warn "OpenShift Sandboxed Containers not installed — run make setup-trustee-in-cluster"; \
+	fi; \
+	\
+	if oc get csv -n trustee-operator-system 2>/dev/null | grep -q "trustee-operator.*Succeeded"; then \
+	    ok "Trustee operator: installed"; \
+	else \
+	    warn "Trustee operator not installed — run make setup-trustee-in-cluster"; \
+	fi; \
+	\
+	echo ""; \
+	echo "=== TEE kernel parameters ==="; \
+	CMDLINE=$$(oc debug node/$$(oc get nodes -o jsonpath='{.items[0].metadata.name}') \
+	    -- chroot /host cat /proc/cmdline 2>/dev/null || echo ""); \
+	if echo "$$CMDLINE" | grep -q "kvm_intel.tdx=1"; then \
+	    ok "kvm_intel.tdx=1 active in kernel cmdline"; \
+	else \
+	    warn "kvm_intel.tdx=1 not in kernel cmdline — apply via: make setup-intel-tee"; \
+	fi; \
+	if echo "$$CMDLINE" | grep -q "intel_iommu=on"; then \
+	    ok "intel_iommu=on active in kernel cmdline"; \
+	else \
+	    warn "intel_iommu=on not in kernel cmdline — apply via: make setup-intel-tee or make setup-amd-tee"; \
+	fi; \
+	\
+	echo ""; \
+	echo "=== Summary ==="; \
+	echo "  PASS: $$PASS   FAIL: $$FAIL   WARN: $$WARN"; \
+	echo ""; \
+	if [ "$$FAIL" -gt 0 ]; then \
+	    echo "  One or more required prerequisites are missing. Fix FAIL items before proceeding."; \
+	    exit 1; \
+	elif [ "$$WARN" -gt 0 ]; then \
+	    echo "  Prerequisites met. WARN items are expected at this stage — see setup targets above."; \
+	else \
+	    echo "  All prerequisites satisfied."; \
+	fi
 
 .PHONY: build-modelcar
 build-modelcar:
