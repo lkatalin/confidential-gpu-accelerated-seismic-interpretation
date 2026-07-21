@@ -393,12 +393,10 @@ oc get route kbs-route -n trustee-operator-system -o jsonpath='{.spec.host}'
 
 The Trustee operator created a KbsConfig named `trusteeconfig-kbs-config` when it processed the TrusteeConfig above. Apply the ConfigMaps first, then update KbsConfig to reference them.
 
-Create the OPA Rego policy ConfigMap:
+Create the attestation policy ConfigMap:
 
-1. Go to **Workloads → ConfigMaps**, select namespace `trustee-operator-system`
-2. Click **Create ConfigMap**, switch to YAML view and paste:
-
-```yaml
+```bash
+oc apply -f - <<'EOF'
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -423,15 +421,13 @@ data:
     }
 
     in_affirming_range(val) if { val >= 2; val <= 31 }
+EOF
 ```
-
-3. Click **Create**
 
 Create the RVPS reference values ConfigMap:
 
-1. Click **Create ConfigMap** again, switch to YAML view and paste:
-
-```yaml
+```bash
+oc apply -f - <<'EOF'
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -439,17 +435,43 @@ metadata:
   namespace: trustee-operator-system
 data:
   reference-values.json: "[]"
+EOF
 ```
 
-2. Click **Create**
+Create the resource policy ConfigMap — this is the second gate after attestation, restricting resource access to clients whose token shows affirming executables:
 
-Update the KbsConfig to reference both ConfigMaps:
+```bash
+oc apply -f - <<'EOF'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: conf-seismic-resource-policy
+  namespace: trustee-operator-system
+data:
+  policy.rego: |
+    package policy
+    import rego.v1
 
-1. Go to **Operators → Installed Operators → Trustee Operator**, click the **KbsConfig** tab
-2. Click the existing `trusteeconfig-kbs-config` entry, then click **Edit KbsConfig**
-3. Switch to YAML view and replace the `spec` with:
+    default allow = false
 
-```yaml
+    allow if {
+        some _, submod in input.submods
+        executables := submod["ear.trustworthiness-vector"]["executables"]
+        executables >= 2
+        executables <= 31
+    }
+EOF
+```
+
+Update the KbsConfig to reference all three ConfigMaps:
+
+```bash
+oc apply -f - <<'EOF'
+apiVersion: confidentialcontainers.org/v1alpha1
+kind: KbsConfig
+metadata:
+  name: trusteeconfig-kbs-config
+  namespace: trustee-operator-system
 spec:
   kbsDeploymentType: AllInOneDeployment
   kbsServiceType: ClusterIP
@@ -458,9 +480,9 @@ spec:
   kbsAuthSecretName: kbs-auth-public-key
   kbsAttestationPolicyConfigMapName: conf-seismic-attestation-policy
   kbsRvpsRefValuesConfigMapName: conf-seismic-rvps-reference-values
+  kbsResourcePolicyConfigMapName: conf-seismic-resource-policy
+EOF
 ```
-
-4. Click **Save**
 5. Go to **Workloads → Pods** and wait for `trustee-deployment-*` to restart and return to **Running**
 
 #### Step 7: Confirm kata runtimeClass is available

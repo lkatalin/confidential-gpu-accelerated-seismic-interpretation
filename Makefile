@@ -426,7 +426,7 @@ setup-trustee-in-cluster:
 	    bash scripts/apply-kbs-certs.sh; \
 	fi; \
 	\
-	echo "=== Step 4: TrusteeConfig and KBS route ==="; \
+	echo "=== Step 4: TrusteeConfig ==="; \
 	if oc get trusteeconfig -n trustee-operator-system \
 	        --ignore-not-found 2>/dev/null | grep -q .; then \
 	    echo "WARNING: TrusteeConfig already exists — KBS already deployed, skipping."; \
@@ -448,6 +448,12 @@ setup-trustee-in-cluster:
 	    echo "WARNING: RVPS reference values ConfigMap already exists, skipping."; \
 	else \
 	    oc apply -f helm/trustee/templates/rvps-configmap.yaml; \
+	fi; \
+	if oc get configmap conf-seismic-resource-policy \
+	        -n trustee-operator-system --ignore-not-found 2>/dev/null | grep -q .; then \
+	    echo "WARNING: Resource policy ConfigMap already exists, skipping."; \
+	else \
+	    oc apply -f helm/trustee/templates/resource-policy-configmap.yaml; \
 	fi; \
 	if oc get kbsconfig trusteeconfig-kbs-config -n trustee-operator-system \
 	        -o jsonpath='{.spec.kbsAttestationPolicyConfigMapName}' 2>/dev/null \
