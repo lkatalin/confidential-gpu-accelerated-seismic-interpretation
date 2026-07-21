@@ -86,12 +86,15 @@ help:
 	@echo "                       kernel parameters, and local tools (oc, helm, cosign, etc.)"
 	@echo ""
 	@echo "  Attestation (cluster-admin, run once per cluster before install):"
-	@echo "    setup-intel-tee          - Apply Intel TDX kernel parameters and verify TEE detection"
+	@echo "    setup-intel-tee          - Apply Intel TDX + IOMMU kernel parameters, reboot, verify TDX active"
 	@echo "                               Run after enabling TDX in server BIOS (see README)"
-	@echo "    setup-amd-tee            - Apply AMD SEV-SNP IOMMU parameters and verify TEE detection"
+	@echo "    setup-amd-tee            - Apply AMD IOMMU kernel parameters, reboot, verify SEV-SNP active"
 	@echo "                               Run after enabling SNP in server BIOS (see README)"
-	@echo "    setup-trustee-in-cluster - Install OSC (kata) and Trustee KBS on the cluster"
-	@echo "                               Requires setup-intel-tee or setup-amd-tee to have run first"
+	@echo "    setup-kata               - Install NFD + NodeFeatureRule, then OSC + KataConfig"
+	@echo "                               Verifies TEE node label and kata-cc runtimeClass"
+	@echo "                               Requires setup-intel-tee or setup-amd-tee to have completed first"
+	@echo "    setup-trustee-in-cluster - Install Trustee KBS operator and configure attestation policy"
+	@echo "                               Requires setup-kata to have completed first (kata-cc must exist)"
 	@echo "    setup-attestation        - Register model key, cosign key, and image policy with KBS"
 	@echo "                               (requires NAMESPACE, MODEL_ENCRYPTION_KEY, cosign.pub)"
 	@echo ""
@@ -480,8 +483,7 @@ uninstall:
 .PHONY: setup-intel-tee
 setup-intel-tee:
 	@set -e; \
-	echo "=== setup-intel-tee: Intel TDX kernel parameters and TEE detection ==="; \
-	echo "=== Step 1: TDX and IOMMU kernel parameters ==="; \
+	echo "=== setup-intel-tee: Intel TDX kernel parameters ==="; \
 	WORKER_COUNT=$$(oc get mcp worker \
 	    -o jsonpath='{.status.machineCount}' 2>/dev/null || echo "0"); \
 	if [ "$$WORKER_COUNT" != "0" ]; then \
@@ -520,52 +522,31 @@ setup-intel-tee:
 	        echo "Node reboot complete."; \
 	    fi; \
 	fi; \
-	\
-	echo "=== Step 2: Node Feature Discovery ==="; \
-	if oc get csv -n openshift-nfd 2>/dev/null \
-	        | grep -q "nfd.*Succeeded"; then \
-	    echo "WARNING: NFD operator already installed, skipping."; \
+	echo "Verifying TDX is active in kernel (spawning debug pod — ~30s)..."; \
+	NODE_NAME=$$(oc get nodes -o jsonpath='{.items[0].metadata.name}'); \
+	oc debug node/$$NODE_NAME -- chroot /host dmesg 2>/dev/null \
+	    | grep -i tdx > /tmp/tdx-verify.txt || true; \
+	if grep -q "BIOS enabled" /tmp/tdx-verify.txt && \
+	        ! grep -q "initialization failed" /tmp/tdx-verify.txt; then \
+	    echo "TDX active: $$(grep 'BIOS enabled' /tmp/tdx-verify.txt | tail -1 | sed 's/.*tdx: //')"; \
+	    rm -f /tmp/tdx-verify.txt; \
+	    echo "=== setup-intel-tee complete — run make setup-kata next ==="; \
+	elif grep -q "initialization failed: Hibernation" /tmp/tdx-verify.txt; then \
+	    echo "ERROR: TDX BIOS enabled but kernel init blocked by hibernation."; \
+	    echo "       The nohibernate kernel arg should have been applied — check:"; \
+	    echo "         oc get mc 99-enable-intel-tdx -o jsonpath='{.spec.kernelArguments}'"; \
+	    rm -f /tmp/tdx-verify.txt; \
+	    exit 1; \
 	else \
-	    echo "Installing Node Feature Discovery operator..."; \
-	    oc apply -f helm/osc/templates/nfd-namespace.yaml; \
-	    oc apply -f helm/osc/templates/nfd-operatorgroup.yaml; \
-	    oc apply -f helm/osc/templates/nfd-subscription.yaml; \
-	    until oc get csv -n openshift-nfd 2>/dev/null \
-	            | grep -q "nfd.*Succeeded"; do sleep 10; done; \
-	    echo "NFD operator ready."; \
-	fi; \
-	if oc get nodefeaturediscovery -n openshift-nfd \
-	        --ignore-not-found 2>/dev/null | grep -q .; then \
-	    echo "WARNING: NodeFeatureDiscovery CR already exists, skipping."; \
-	else \
-	    oc apply -f helm/osc/templates/nfd-instance.yaml; \
-	fi; \
-	echo "Waiting for NFD worker pods to be ready..."; \
-	oc rollout status daemonset/nfd-worker -n openshift-nfd --timeout=5m 2>/dev/null || true; \
-	if oc get nodefeaturerule tdx-features -n openshift-nfd \
-	        --ignore-not-found 2>/dev/null | grep -q .; then \
-	    echo "WARNING: NodeFeatureRule tdx-features already exists, skipping."; \
-	else \
-	    oc apply -f helm/osc/templates/node-feature-rule.yaml; \
-	    echo "NodeFeatureRule applied."; \
-	fi; \
-	echo "Verifying intel.feature.node.kubernetes.io/tdx label..."; \
-	if oc get node -o jsonpath='{.items[*].metadata.labels}' 2>/dev/null \
-	        | grep -q "intel.feature.node.kubernetes.io/tdx"; then \
-	    echo "TEE label detected: intel.feature.node.kubernetes.io/tdx"; \
-	    echo "=== setup-intel-tee complete — run make setup-trustee-in-cluster next ==="; \
-	else \
-	    echo "ERROR: intel.feature.node.kubernetes.io/tdx label not found."; \
-	    echo "       Verify BIOS settings — TDX, TME, and TME-MT must all be enabled."; \
-	    echo "       See README hardware prerequisite section."; \
+	    echo "ERROR: TDX not active in kernel — check BIOS settings (see README hardware prerequisites)."; \
+	    rm -f /tmp/tdx-verify.txt; \
 	    exit 1; \
 	fi
 
 .PHONY: setup-amd-tee
 setup-amd-tee:
 	@set -e; \
-	echo "=== setup-amd-tee: AMD SEV-SNP IOMMU parameters and TEE detection ==="; \
-	echo "=== Step 1: IOMMU kernel parameters ==="; \
+	echo "=== setup-amd-tee: AMD SEV-SNP IOMMU parameters ==="; \
 	WORKER_COUNT=$$(oc get mcp worker \
 	    -o jsonpath='{.status.machineCount}' 2>/dev/null || echo "0"); \
 	if [ "$$WORKER_COUNT" != "0" ]; then \
@@ -593,8 +574,41 @@ setup-amd-tee:
 	        echo "Node reboot complete."; \
 	    fi; \
 	fi; \
+	echo "Verifying SEV-SNP is active in kernel (spawning debug pod — ~30s)..."; \
+	NODE_NAME=$$(oc get nodes -o jsonpath='{.items[0].metadata.name}'); \
+	oc debug node/$$NODE_NAME -- chroot /host dmesg 2>/dev/null \
+	    | grep -iE "sev.snp|sev snp" > /tmp/snp-verify.txt || true; \
+	if grep -qi "snp" /tmp/snp-verify.txt; then \
+	    echo "SEV-SNP active: $$(grep -i snp /tmp/snp-verify.txt | tail -1 | sed 's/.*\] //')"; \
+	    rm -f /tmp/snp-verify.txt; \
+	    echo "=== setup-amd-tee complete — run make setup-kata next ==="; \
+	else \
+	    echo "ERROR: SEV-SNP not detected in kernel dmesg."; \
+	    echo "       Verify BIOS settings — SEV-SNP must be enabled in server firmware (see README)."; \
+	    rm -f /tmp/snp-verify.txt; \
+	    exit 1; \
+	fi
+
+.PHONY: setup-kata
+setup-kata:
+	@set -e; \
+	echo "=== setup-kata: Node Feature Discovery and OpenShift Sandboxed Containers ==="; \
+	echo "=== Pre-flight checks ==="; \
+	if ! oc get csv -n nvidia-gpu-operator 2>/dev/null \
+	        | grep -q "gpu-operator.*Succeeded"; then \
+	    echo "ERROR: NVIDIA GPU Operator not found (namespace: nvidia-gpu-operator)."; \
+	    echo "       Install it via OperatorHub before running this target."; \
+	    exit 1; \
+	fi; \
+	echo "GPU Operator: OK"; \
+	if ! oc get mc 100-iommu-kernel-args --ignore-not-found 2>/dev/null | grep -q .; then \
+	    echo "ERROR: IOMMU MachineConfig not found."; \
+	    echo "       Run make setup-intel-tee (Intel) or make setup-amd-tee (AMD) first."; \
+	    exit 1; \
+	fi; \
+	echo "TEE MachineConfig: OK"; \
 	\
-	echo "=== Step 2: Node Feature Discovery ==="; \
+	echo "=== Step 1: Node Feature Discovery ==="; \
 	if oc get csv -n openshift-nfd 2>/dev/null \
 	        | grep -q "nfd.*Succeeded"; then \
 	    echo "WARNING: NFD operator already installed, skipping."; \
@@ -622,57 +636,17 @@ setup-amd-tee:
 	    oc apply -f helm/osc/templates/node-feature-rule.yaml; \
 	    echo "NodeFeatureRule applied."; \
 	fi; \
-	echo "Verifying amd.feature.node.kubernetes.io/snp label..."; \
+	echo "Verifying TEE node label..."; \
 	if oc get node -o jsonpath='{.items[*].metadata.labels}' 2>/dev/null \
+	        | grep -q "intel.feature.node.kubernetes.io/tdx"; then \
+	    echo "TEE label detected: intel.feature.node.kubernetes.io/tdx"; \
+	elif oc get node -o jsonpath='{.items[*].metadata.labels}' 2>/dev/null \
 	        | grep -q "amd.feature.node.kubernetes.io/snp"; then \
 	    echo "TEE label detected: amd.feature.node.kubernetes.io/snp"; \
-	    echo "=== setup-amd-tee complete — run make setup-trustee-in-cluster next ==="; \
 	else \
-	    echo "ERROR: amd.feature.node.kubernetes.io/snp label not found."; \
-	    echo "       Verify BIOS settings — SEV-SNP must be enabled in server firmware."; \
-	    echo "       See README hardware prerequisite section."; \
+	    echo "ERROR: No TEE label found (intel.feature.node.kubernetes.io/tdx or amd.feature.node.kubernetes.io/snp)."; \
+	    echo "       Ensure BIOS TDX/SNP is enabled and setup-intel-tee/setup-amd-tee completed successfully."; \
 	    exit 1; \
-	fi
-
-.PHONY: setup-trustee-in-cluster
-setup-trustee-in-cluster:
-	@set -e; \
-	echo "=== Pre-flight checks ==="; \
-	if ! oc get csv -n nvidia-gpu-operator 2>/dev/null \
-	        | grep -q "gpu-operator.*Succeeded"; then \
-	    echo "ERROR: NVIDIA GPU Operator not found (namespace: nvidia-gpu-operator)."; \
-	    echo "       Install it via OperatorHub before running this target."; \
-	    exit 1; \
-	fi; \
-	echo "GPU Operator: OK"; \
-	if ! oc get node -o jsonpath='{.items[*].metadata.labels}' 2>/dev/null \
-	        | grep -qE "intel\.feature\.node\.kubernetes\.io/tdx|amd\.feature\.node\.kubernetes\.io/snp"; then \
-	    echo "ERROR: No TEE platform label found on cluster nodes."; \
-	    echo "       Enable TDX or SNP in server BIOS, then run:"; \
-	    echo "         make setup-intel-tee   (Intel Xeon with TDX)"; \
-	    echo "         make setup-amd-tee     (AMD EPYC with SEV-SNP)"; \
-	    exit 1; \
-	fi; \
-	echo "TEE label: OK"; \
-	\
-	echo "=== Step 1: Node Feature Discovery ==="; \
-	if oc get csv -n openshift-nfd 2>/dev/null \
-	        | grep -q "nfd.*Succeeded"; then \
-	    echo "WARNING: NFD operator already installed, skipping."; \
-	else \
-	    echo "Installing Node Feature Discovery operator..."; \
-	    oc apply -f helm/osc/templates/nfd-namespace.yaml; \
-	    oc apply -f helm/osc/templates/nfd-operatorgroup.yaml; \
-	    oc apply -f helm/osc/templates/nfd-subscription.yaml; \
-	    until oc get csv -n openshift-nfd 2>/dev/null \
-	            | grep -q "nfd.*Succeeded"; do sleep 10; done; \
-	    echo "NFD operator ready."; \
-	fi; \
-	if oc get nodefeaturediscovery -n openshift-nfd \
-	        --ignore-not-found 2>/dev/null | grep -q .; then \
-	    echo "WARNING: NodeFeatureDiscovery CR already exists, skipping."; \
-	else \
-	    oc apply -f helm/osc/templates/nfd-instance.yaml; \
 	fi; \
 	\
 	echo "=== Step 2: OpenShift Sandboxed Containers ==="; \
@@ -700,118 +674,25 @@ setup-trustee-in-cluster:
 	        -n openshift-sandboxed-containers-operator \
 	        --ignore-not-found 2>/dev/null | grep -q .; then \
 	    echo "WARNING: osc-feature-gates ConfigMap already exists, skipping."; \
-	    echo "         If confidential mode is not enabled, this must be resolved manually."; \
 	else \
 	    oc apply -f helm/osc/templates/01-osc-feature-gates.yaml; \
 	fi; \
 	if oc get kataconfig --ignore-not-found 2>/dev/null | grep -q .; then \
-	    echo "WARNING: KataConfig already exists, skipping. No node reboots will be triggered."; \
+	    echo "WARNING: KataConfig already exists, skipping."; \
 	else \
 	    WORKER_COUNT=$$(oc get mcp worker \
 	        -o jsonpath='{.status.machineCount}' 2>/dev/null || echo "0"); \
 	    if [ "$$WORKER_COUNT" = "0" ]; then \
-	        echo "WARNING: Single-node cluster detected (worker MCP empty) — using master-pool KataConfig."; \
-	        echo "WARNING: Creating KataConfig — node will reboot (brief cluster outage ~10 min)."; \
+	        echo "WARNING: Single-node cluster — using master-pool KataConfig (node will reboot ~10 min)."; \
 	        oc apply -f helm/osc/templates/kataconfig-sno.yaml; \
 	    else \
-	        echo "WARNING: Multi-node cluster detected — using default KataConfig (kata-oc pool)."; \
-	        echo "WARNING: Creating KataConfig — nodes will reboot in sequence."; \
+	        echo "WARNING: Multi-node cluster — using default KataConfig (nodes reboot in sequence)."; \
 	        oc apply -f helm/osc/templates/kataconfig.yaml; \
 	    fi; \
 	fi; \
-	\
-	echo "=== Step 3: Trustee operator ==="; \
-	if oc get csv -n trustee-operator-system 2>/dev/null \
-	        | grep -q "trustee-operator.*Succeeded"; then \
-	    echo "WARNING: Trustee operator already installed, skipping."; \
-	else \
-	    echo "Installing Trustee operator..."; \
-	    oc apply -f helm/trustee/templates/trustee-namespace.yaml; \
-	    oc apply -f helm/trustee/templates/trustee-operatorgroup.yaml; \
-	    oc apply -f helm/trustee/templates/trustee-subscription.yaml; \
-	    until oc get installplan -n trustee-operator-system \
-	            --ignore-not-found 2>/dev/null | grep -q .; do sleep 5; done; \
-	    INSTALL_PLAN=$$(oc get installplan -n trustee-operator-system \
-	        -o jsonpath='{.items[0].metadata.name}'); \
-	    oc patch installplan $$INSTALL_PLAN -n trustee-operator-system \
-	        --type merge --patch '{"spec":{"approved":true}}'; \
-	    until oc get csv -n trustee-operator-system 2>/dev/null \
-	            | grep -q "trustee-operator.*Succeeded"; do sleep 10; done; \
-	    echo "Trustee operator ready."; \
-	fi; \
-	\
-	echo "=== Step 3a: kbs-auth-public-key Secret ==="; \
-	if oc get secret kbs-auth-public-key -n trustee-operator-system \
-	        --ignore-not-found 2>/dev/null | grep -q .; then \
-	    echo "WARNING: kbs-auth-public-key Secret already exists, skipping."; \
-	else \
-	    echo "Generating kbs-auth-public-key (Ed25519)..."; \
-	    openssl genpkey -algorithm ed25519 -out /tmp/kbs-private.pem; \
-	    openssl pkey -in /tmp/kbs-private.pem -pubout -out /tmp/kbs-public.pem; \
-	    oc create secret generic kbs-auth-public-key \
-	        -n trustee-operator-system \
-	        --from-file=publicKey=/tmp/kbs-public.pem; \
-	    rm -f /tmp/kbs-private.pem /tmp/kbs-public.pem; \
-	    echo "kbs-auth-public-key Secret created."; \
-	fi; \
-	\
-	echo "=== Step 3b: cert-manager Issuer and TLS Certificates ==="; \
-	if oc get secret trustee-tls-cert -n trustee-operator-system \
-	        --ignore-not-found 2>/dev/null | grep -q .; then \
-	    echo "WARNING: trustee-tls-cert Secret already exists, skipping cert creation."; \
-	else \
-	    bash scripts/apply-kbs-certs.sh; \
-	fi; \
-	\
-	echo "=== Step 4: TrusteeConfig ==="; \
-	if oc get trusteeconfig -n trustee-operator-system \
-	        --ignore-not-found 2>/dev/null | grep -q .; then \
-	    echo "WARNING: TrusteeConfig already exists — KBS already deployed, skipping."; \
-	else \
-	    oc apply -f helm/trustee/templates/trustee-config.yaml; \
-	    oc rollout status deployment/trustee-deployment \
-	        -n trustee-operator-system --timeout=5m; \
-	fi; \
-	\
-	echo "=== Step 5: Attestation policy ConfigMaps and KbsConfig ==="; \
-	if oc get configmap conf-seismic-attestation-policy \
-	        -n trustee-operator-system --ignore-not-found 2>/dev/null | grep -q .; then \
-	    echo "WARNING: Attestation policy ConfigMap already exists, skipping."; \
-	else \
-	    oc apply -f helm/trustee/templates/attestation-policy-configmap.yaml; \
-	fi; \
-	if oc get configmap conf-seismic-rvps-reference-values \
-	        -n trustee-operator-system --ignore-not-found 2>/dev/null | grep -q .; then \
-	    echo "WARNING: RVPS reference values ConfigMap already exists, skipping."; \
-	else \
-	    oc apply -f helm/trustee/templates/rvps-configmap.yaml; \
-	fi; \
-	if oc get configmap conf-seismic-resource-policy \
-	        -n trustee-operator-system --ignore-not-found 2>/dev/null | grep -q .; then \
-	    echo "WARNING: Resource policy ConfigMap already exists, skipping."; \
-	else \
-	    oc apply -f helm/trustee/templates/resource-policy-configmap.yaml; \
-	fi; \
-	if oc get kbsconfig trusteeconfig-kbs-config -n trustee-operator-system \
-	        -o jsonpath='{.spec.kbsAttestationPolicyConfigMapName}' 2>/dev/null \
-	        | grep -q "conf-seismic"; then \
-	    echo "WARNING: KbsConfig already references conf-seismic policy, skipping."; \
-	else \
-	    oc apply -f helm/trustee/templates/kbs-config.yaml; \
-	    oc rollout status deployment/trustee-deployment \
-	        -n trustee-operator-system --timeout=5m; \
-	fi; \
-	echo "KBS route: $$(oc get route kbs-service \
-	    -n trustee-operator-system -o jsonpath='{.spec.host}')"; \
-	\
-	echo "=== Step 6: Wait for MachineConfigPool rollout and kata runtimeClasses ==="; \
 	WORKER_COUNT=$$(oc get mcp worker \
 	    -o jsonpath='{.status.machineCount}' 2>/dev/null || echo "0"); \
-	if [ "$$WORKER_COUNT" = "0" ]; then \
-	    KATA_MCP=master; \
-	else \
-	    KATA_MCP=kata-oc; \
-	fi; \
+	if [ "$$WORKER_COUNT" = "0" ]; then KATA_MCP=master; else KATA_MCP=kata-oc; fi; \
 	echo "Waiting for MachineConfigPool $$KATA_MCP rollout (up to 30 min)..."; \
 	DEADLINE=$$(( $$(date +%s) + 1800 )); \
 	while [ $$(date +%s) -lt $$DEADLINE ]; do \
@@ -844,6 +725,102 @@ setup-trustee-in-cluster:
 	    sleep 30; \
 	done; \
 	echo "kata-cc-nvidia-gpu runtimeClass is ready."; \
+	echo "=== setup-kata complete — run make setup-trustee-in-cluster next ==="
+
+.PHONY: setup-trustee-in-cluster
+setup-trustee-in-cluster:
+	@set -e; \
+	echo "=== Pre-flight checks ==="; \
+	if ! oc get runtimeclass kata-cc 2>/dev/null | grep -q kata-cc; then \
+	    echo "ERROR: kata-cc runtimeClass not found."; \
+	    echo "       Run make setup-kata first."; \
+	    exit 1; \
+	fi; \
+	echo "kata-cc runtimeClass: OK"; \
+	\
+	echo "=== Step 1: Trustee operator ==="; \
+	if oc get csv -n trustee-operator-system 2>/dev/null \
+	        | grep -q "trustee-operator.*Succeeded"; then \
+	    echo "WARNING: Trustee operator already installed, skipping."; \
+	else \
+	    echo "Installing Trustee operator..."; \
+	    oc apply -f helm/trustee/templates/trustee-namespace.yaml; \
+	    oc apply -f helm/trustee/templates/trustee-operatorgroup.yaml; \
+	    oc apply -f helm/trustee/templates/trustee-subscription.yaml; \
+	    until oc get installplan -n trustee-operator-system \
+	            --ignore-not-found 2>/dev/null | grep -q .; do sleep 5; done; \
+	    INSTALL_PLAN=$$(oc get installplan -n trustee-operator-system \
+	        -o jsonpath='{.items[0].metadata.name}'); \
+	    oc patch installplan $$INSTALL_PLAN -n trustee-operator-system \
+	        --type merge --patch '{"spec":{"approved":true}}'; \
+	    until oc get csv -n trustee-operator-system 2>/dev/null \
+	            | grep -q "trustee-operator.*Succeeded"; do sleep 10; done; \
+	    echo "Trustee operator ready."; \
+	fi; \
+	\
+	echo "=== Step 1a: kbs-auth-public-key Secret ==="; \
+	if oc get secret kbs-auth-public-key -n trustee-operator-system \
+	        --ignore-not-found 2>/dev/null | grep -q .; then \
+	    echo "WARNING: kbs-auth-public-key Secret already exists, skipping."; \
+	else \
+	    echo "Generating kbs-auth-public-key (Ed25519)..."; \
+	    openssl genpkey -algorithm ed25519 -out /tmp/kbs-private.pem; \
+	    openssl pkey -in /tmp/kbs-private.pem -pubout -out /tmp/kbs-public.pem; \
+	    oc create secret generic kbs-auth-public-key \
+	        -n trustee-operator-system \
+	        --from-file=publicKey=/tmp/kbs-public.pem; \
+	    rm -f /tmp/kbs-private.pem /tmp/kbs-public.pem; \
+	    echo "kbs-auth-public-key Secret created."; \
+	fi; \
+	\
+	echo "=== Step 1b: cert-manager Issuer and TLS Certificates ==="; \
+	if oc get secret trustee-tls-cert -n trustee-operator-system \
+	        --ignore-not-found 2>/dev/null | grep -q .; then \
+	    echo "WARNING: trustee-tls-cert Secret already exists, skipping cert creation."; \
+	else \
+	    bash scripts/apply-kbs-certs.sh; \
+	fi; \
+	\
+	echo "=== Step 2: TrusteeConfig ==="; \
+	if oc get trusteeconfig -n trustee-operator-system \
+	        --ignore-not-found 2>/dev/null | grep -q .; then \
+	    echo "WARNING: TrusteeConfig already exists — KBS already deployed, skipping."; \
+	else \
+	    oc apply -f helm/trustee/templates/trustee-config.yaml; \
+	    oc rollout status deployment/trustee-deployment \
+	        -n trustee-operator-system --timeout=5m; \
+	fi; \
+	\
+	echo "=== Step 3: Attestation policy ConfigMaps and KbsConfig ==="; \
+	if oc get configmap conf-seismic-attestation-policy \
+	        -n trustee-operator-system --ignore-not-found 2>/dev/null | grep -q .; then \
+	    echo "WARNING: Attestation policy ConfigMap already exists, skipping."; \
+	else \
+	    oc apply -f helm/trustee/templates/attestation-policy-configmap.yaml; \
+	fi; \
+	if oc get configmap conf-seismic-rvps-reference-values \
+	        -n trustee-operator-system --ignore-not-found 2>/dev/null | grep -q .; then \
+	    echo "WARNING: RVPS reference values ConfigMap already exists, skipping."; \
+	else \
+	    oc apply -f helm/trustee/templates/rvps-configmap.yaml; \
+	fi; \
+	if oc get configmap conf-seismic-resource-policy \
+	        -n trustee-operator-system --ignore-not-found 2>/dev/null | grep -q .; then \
+	    echo "WARNING: Resource policy ConfigMap already exists, skipping."; \
+	else \
+	    oc apply -f helm/trustee/templates/resource-policy-configmap.yaml; \
+	fi; \
+	if oc get kbsconfig trusteeconfig-kbs-config -n trustee-operator-system \
+	        -o jsonpath='{.spec.kbsAttestationPolicyConfigMapName}' 2>/dev/null \
+	        | grep -q "conf-seismic"; then \
+	    echo "WARNING: KbsConfig already references conf-seismic policy, skipping."; \
+	else \
+	    oc apply -f helm/trustee/templates/kbs-config.yaml; \
+	    oc rollout status deployment/trustee-deployment \
+	        -n trustee-operator-system --timeout=5m; \
+	fi; \
+	echo "KBS route: $$(oc get route kbs-service \
+	    -n trustee-operator-system -o jsonpath='{.spec.host}')"; \
 	echo "=== setup-trustee-in-cluster complete ==="
 
 .PHONY: setup-attestation

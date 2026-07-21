@@ -27,8 +27,7 @@ AI-powered rock type classification from North Sea seismic data — running with
     - [Step 5: Deploy KBS](#step-5-deploy-kbs)
     - [Step 6: Verify the KBS route](#step-6-verify-the-kbs-route)
     - [Step 7: Configure the attestation policy](#step-7-configure-the-attestation-policy)
-    - [Step 8: Confirm kata runtimeClass is available](#step-8-confirm-kata-runtimeclass-is-available)
-    - [Step 9: Register app-specific secrets with KBS](#step-9-register-app-specific-secrets-with-kbs)
+    - [Step 8: Register app-specific secrets with KBS](#step-8-register-app-specific-secrets-with-kbs)
   - [Part 2: Application deployment (namespace admin)](#part-2-application-deployment-namespace-admin)
     - [Step 1: Create the project](#step-1-create-the-project)
     - [Step 2: Deploy the application](#step-2-deploy-the-application)
@@ -255,6 +254,9 @@ make setup-intel-tee    # Intel Xeon with TDX
 make setup-amd-tee      # AMD EPYC with SEV-SNP
 
 # 2. After setup-intel-tee / setup-amd-tee completes:
+make setup-kata
+
+# 3. After setup-kata completes:
 make setup-trustee-in-cluster
 ```
 
@@ -544,7 +546,15 @@ Go to **Compute → MachineConfigPools**:
 - **Single-node**: the `master` pool will show `UPDATING=True` then `UPDATED=True`. The node will reboot once — expect ~10 minutes of cluster unavailability.
 - **Multi-node**: a new `kata-oc` pool appears and nodes reboot one at a time (10–20 minutes total).
 
-You do not need to wait here; continue to Step 4 while reboots proceed in the background. Step 8 confirms the rollout is complete.
+Once the MachineConfigPool shows `UPDATED=True`, confirm the kata runtimeClasses are present:
+
+```bash
+oc get runtimeclass | grep kata
+```
+
+**Expected outcome:**
+- ✓ `kata-cc` runtimeClass listed
+- ✓ `kata-cc-nvidia-gpu` runtimeClass listed
 
 #### Step 4: Install the Trustee operator
 
@@ -717,33 +727,7 @@ EOF
 ```
 5. Go to **Workloads → Pods** and wait for `trustee-deployment-*` to restart and return to **Running**
 
-#### Step 8: Confirm kata runtimeClass is available
-
-By now the node reboots started in Step 3 (KataConfig) should be complete or close to finishing.
-
-1. Check the MachineConfigPool for your cluster type:
-
-```bash
-# Single-node (worker MCP count = 0):
-oc get mcp master
-
-# Multi-node (worker MCP count ≥ 1):
-oc get mcp kata-oc
-```
-
-Confirm the relevant pool shows `UPDATED=True`, `UPDATING=False`, `DEGRADED=False`.
-
-2. Confirm the runtimeClasses are present:
-
-```bash
-oc get runtimeclass | grep kata
-```
-
-**Expected outcome:**
-- ✓ `kata-cc` runtimeClass listed
-- ✓ `kata-cc-nvidia-gpu` runtimeClass listed
-
-#### Step 9: Register app-specific secrets with KBS
+#### Step 8: Register app-specific secrets with KBS
 
 The KBS has no web UI for secret registration. These three `curl` commands register the model key, cosign public key, and image verification policy directly against the KBS REST API. Get the KBS route hostname from Step 6, then run from a terminal with `MODEL_ENCRYPTION_KEY` set and `cosign.pub` present:
 
@@ -770,7 +754,7 @@ printf '{"default":[{"type":"reject"}],"transports":{"docker":{"%s":[{"type":"si
 
 Or equivalently: `make setup-attestation NAMESPACE=$NAMESPACE KBS_URL=https://$KBS_ROUTE`
 
-> `make setup-intel-tee` (or `make setup-amd-tee`) runs Steps 1–2. `make setup-trustee-in-cluster` runs Steps 3–8 automatically. `make setup-attestation` performs Step 9.
+> `make setup-intel-tee` (or `make setup-amd-tee`) runs Step 1. `make setup-kata` runs Steps 2–3. `make setup-trustee-in-cluster` runs Steps 4–7 automatically. `make setup-attestation` performs Step 8.
 
 ---
 
