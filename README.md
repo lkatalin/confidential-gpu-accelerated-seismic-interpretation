@@ -13,6 +13,7 @@ AI-powered classification from North Sea seismic data — running with a three-f
 - [Requirements](#requirements)
   - [Minimum hardware requirements](#minimum-hardware-requirements)
   - [Minimum software requirements](#minimum-software-requirements)
+  - [Network connectivity requirements](#network-connectivity-requirements)
   - [Required user permissions](#required-user-permissions)
 - [Deploy](#deploy)
   - [Clone the repository](#clone-the-repository)
@@ -207,6 +208,19 @@ flowchart LR
 | Trustee (KBS) | 1.1.0 | `confidential-containers/trustee` — Key Broker Server, deployed as part of this quickstart |
 | Cosign | 2.0+ | For verifying model image signatures; installed locally for the optional encrypt step |
 
+### Network connectivity requirements
+
+Attestation requires outbound HTTPS (port 443) access from the clusters to the following external services:
+
+| From | Destination | Purpose |
+|---|---|---|
+| Workload cluster (Intel TDX only) | `api.trustedservices.intel.com` | Intel Provisioning Certificate Service (PCS) — fetches CPU provisioning certificates for TDX quote generation. Not required if a local PCCS is configured. |
+| Trustee cluster | `nras.attestation.nvidia.com` | NVIDIA Remote Attestation Service — verifies GPU attestation reports |
+| Trustee cluster | `rim.attestation.nvidia.com` | NVIDIA RIM Service — fetches GPU firmware reference integrity manifests |
+| Trustee cluster | `ocsp.ndis.nvidia.com` | NVIDIA OCSP — GPU certificate revocation checks |
+
+> In a restricted network environment, `api.trustedservices.intel.com` can be replaced by a locally deployed PCCS instance (see the note in the hardware prerequisite section). Local mirroring of the NVIDIA RIM and OCSP services may also be possible — refer to the [NVIDIA Attestation documentation](https://docs.nvidia.com/attestation/index.html) for details.
+
 ### Required user permissions
 
 This quickstart separates one-time platform setup (done by a platform team) from per-deployment application work (done by application teams). Most users only need namespace-level access.
@@ -359,11 +373,31 @@ To validate all hardware and software prerequisites before proceeding:
 make check-prereqs
 ```
 
+> **Intel TDX: Provisioning Certificate Caching Service (PCCS)**
+>
+> When a TDX pod generates an attestation quote, the quote must be verified against Intel's certificate chain to prove the CPU is genuine Intel hardware running legitimate TDX firmware. By default, the attestation agent fetches these certificates directly from Intel's online Provisioning Certificate Service (PCS) on each attestation.
+>
+> Running a local **Provisioning Certificate Caching Service (PCCS)** is recommended even when outbound internet access is not restricted, for several reasons:
+> - **Reliability** — attestation does not fail if Intel's online PCS is temporarily unavailable.
+> - **Performance** — a local cache eliminates per-attestation round-trip latency to Intel's servers.
+> - **Privacy** — without PCCS, every TDX node calls Intel's PCS directly, letting Intel observe per-platform activity. With PCCS, only the caching service contacts Intel.
+> - **Compliance** — in regulated environments, having a single auditable egress point for Intel certificate fetching is easier to control than every node reaching the internet independently.
+>
+> PCCS only serves Intel-signed certificates — a compromised PCCS cannot forge trust or produce fake attestation quotes, since all certificates are verified against Intel's root CA. However, a stale or tampered PCCS could serve outdated revocation lists (CRLs) or TCB (Trusted Computing Base) data, which would prevent the system from detecting known vulnerabilities in platform firmware. For this reason, PCCS should run on trusted, well-maintained infrastructure — not on the same untrusted workload cluster — and should be kept updated so that revocation and TCB information stays current.
+>
+> This quickstart does not include instructions for installing or configuring PCCS — the attestation agent will fall back to Intel's online PCS directly if no local PCCS is configured. For production deployments, refer to the [Intel PCCS documentation](https://www.intel.com/content/www/us/en/developer/tools/software-guard-extensions/tdx-attestation.html) for setup instructions. AMD SEV-SNP does not require PCCS.
+
 ---
 
 ### Kata containers setup (cluster-admin, once per cluster)
 
-NFD and OSC together enable confidential kata containers on the node. NFD detects the active TEE hardware and labels the node; OSC uses that label to install the `kata-cc` and `kata-cc-nvidia-gpu` runtimeClasses.
+Kata Containers is an open-source container runtime that runs each pod inside a lightweight virtual machine rather than sharing the host kernel. Unlike standard containers — which rely on Linux namespaces and cgroups for isolation — a kata container gets its own dedicated VM kernel, meaning a compromised workload cannot affect the host OS or other pods. In this quickstart, the `kata-cc` runtime variant goes further: it runs the VM inside a hardware Trust Domain (Intel® TDX or AMD SEV-SNP), so the pod's memory is encrypted and inaccessible even to the hypervisor or cluster administrator. The `kata-cc-nvidia-gpu` runtime extends this with GPU passthrough, giving the workload direct, encrypted access to the NVIDIA GPU without exposing data outside the Trust Domain.
+
+Node Feature Discovery (NFD) and OpenShift Sandboxed Containers (OSC) together enable these runtimes on the node. NFD detects the active TEE hardware and labels the node; OSC uses those labels to install the `kata-cc` and `kata-cc-nvidia-gpu` runtimeClasses that pods in this quickstart use.
+
+OSC is Red Hat's supported, productized distribution of Kata Containers. It installs and manages the runtime via an OLM operator, integrates with OpenShift's MachineConfig and node lifecycle management, and adds the `kata-cc` confidential containers variant with Intel® TDX / AMD SEV-SNP support and NVIDIA GPU passthrough on top of the upstream Kata Containers project.
+
+For more on Kata Containers, see the [Kata Containers documentation](https://katacontainers.io/) and the [OpenShift Sandboxed Containers 1.12 documentation](https://docs.redhat.com/en/documentation/openshift_sandboxed_containers/1.12).
 
 To perform automatically (after the hardware prerequisite above is complete):
 
