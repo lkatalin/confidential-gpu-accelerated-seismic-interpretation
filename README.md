@@ -205,10 +205,8 @@ flowchart LR
 
 | Software | Version | Notes |
 |---|---|---|
-| OpenShift Container Platform | 4.14+ | |
+| OpenShift Container Platform | 4.21.9+ | Required by OpenShift Sandboxed Containers 1.12 with confidential containers support |
 | Red Hat OpenShift AI | 3.4+ | Provides the model serving stack and manages the NVIDIA GPU Operator and CUDA runtime — install via OperatorHub |
-| OpenShift Sandboxed Containers operator | 1.5+ | Provides Kata runtime classes including `kata-cc-nvidia-gpu` |
-| Node Feature Discovery (NFD) operator | Latest | Detects TEE-capable nodes (Intel TDX or AMD SEV-SNP) and labels them; bundled with OpenShift AI |
 | NVIDIA GPU Operator | Latest | Manages GPU drivers, CUDA, and CC mode on H100 nodes; installed and managed by OpenShift AI |
 | Trustee (KBS) | Latest | `confidential-containers/trustee` — Key Broker Server, deployed as part of this quickstart |
 | Cosign | 2.0+ | For verifying model image signatures; installed locally for the optional encrypt step |
@@ -217,11 +215,11 @@ flowchart LR
 
 This quickstart separates one-time platform setup (done by a platform team) from per-deployment application work (done by application teams). Most users only need namespace-level access.
 
-**Part 1 — Platform setup (cluster-admin, done once per cluster):**
+**Platform setup (cluster-admin, done once per cluster):**
 - Installing the OpenShift Sandboxed Containers, NFD, and NVIDIA GPU operators — these create cluster-scoped CRDs and ClusterRoles
 - Creating `KataConfig` and `NodeFeatureRule` — cluster-scoped resources
 
-**Part 2 — Application deployment (no cluster-admin required):**
+**Application deployment (no cluster-admin required):**
 
 | Task | Minimum role |
 |---|---|
@@ -357,6 +355,12 @@ After the node comes back, verify TDX is active in the kernel:
 ```bash
 oc debug node/<node-name> -- chroot /host dmesg | grep -i tdx
 # Expected: "virt/tdx: BIOS enabled" and "virt/tdx: module initialized"
+```
+
+To validate all hardware and software prerequisites before proceeding:
+
+```bash
+make check-prereqs
 ```
 
 ---
