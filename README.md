@@ -202,20 +202,20 @@ flowchart LR
     subgraph Pod["OpenShift Pod · kata-cc-nvidia-gpu"]
         subgraph TEE["Kata VM · Hardware Trust Domain · Encrypted Memory · TDX or SEV-SNP"]
             direction TB
-            Agent["init-attestation\nAttestation Agent\nCPU TEE quote · NVIDIA CC report\nimage digest + cosign sig"]:::default
-            ModelPull["init-model\nPull encrypted ModelCar\nDecrypt into TEE-encrypted memory\nMount at /models-cache"]:::default
             Gradio["Gradio UI\nport 7860"]:::rhOutline
             UNet["U-Net ResNet-50\nNVIDIA GPU CC mode\nGPU via PCI passthrough"]:::rhRed
             Plot["Matplotlib facies plot"]:::rhOutline
-            Agent --> ModelPull
-            ModelPull -->|decrypted model| UNet
+            Agent["init-attestation\nAttestation Agent\nCPU TEE quote · NVIDIA CC report\nimage digest + cosign sig"]:::default
+            ModelPull["init-model\nPull encrypted ModelCar\nDecrypt into TEE-encrypted memory\nMount at /models-cache"]:::default
             Gradio -->|seismic input| UNet
             UNet -->|inference result| Plot
             Plot -->|facies image| Gradio
+            Agent --> ModelPull
+            ModelPull -->|decrypted model| UNet
         end
     end
 
-    Route --> Gradio
+    Route -->|port 7860| Gradio
     Agent -->|"① evidence bundle"| ASVerify
     KBSPolicy -->|"② AES key"| Agent
     ModelCar -->|pull encrypted| ModelPull
