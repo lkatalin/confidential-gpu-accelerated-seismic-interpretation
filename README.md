@@ -117,7 +117,7 @@ flowchart TB
         KBS["Trustee / KBS\nverifies evidence independently\nof the workload cluster"]:::trusted
     end
 
-    Intel["Intel PCS · NVIDIA NRAS\nCosign public key"]:::external
+    Intel["Intel PCS (TDX)\nAMD KDS (SEV-SNP)\nNVIDIA NRAS · NVIDIA RIM\nCosign public key"]:::external
 
     AA -- "① evidence bundle\nCPU TEE quote + GPU CC report\n+ image digest + cosign sig\n+ initdata hash" --> KBS
     KBS -- "② verify against\nvendor services" --> Intel
@@ -200,7 +200,7 @@ flowchart LR
     end
 
     NRAS["NVIDIA NRAS\nexternal"]:::rhBlack
-    PCS["Intel PCS / AMD\nexternal"]:::rhBlack
+    PCS["Intel PCS (TDX) · AMD KDS (SEV-SNP)\nexternal"]:::rhBlack
     ASVerify -->|validate GPU CC report| NRAS
     ASVerify -->|validate CPU TEE quote| PCS
 
@@ -263,12 +263,14 @@ Attestation requires outbound HTTPS (port 443) access from the clusters to the f
 
 | From | Destination | Purpose |
 |---|---|---|
-| Workload cluster (Intel TDX only) | `api.trustedservices.intel.com` | Intel Provisioning Certificate Service (PCS) — fetches CPU provisioning certificates for TDX quote generation. Not required if a local PCCS is configured. |
+| Workload cluster (Intel TDX only) | `api.trustedservices.intel.com` | Intel PCS — fetches PCK certificates used during TDX quote generation. Not required if a local PCCS is configured. |
+| Trustee cluster (Intel TDX) | `api.trustedservices.intel.com` | Intel PCS — verifies the PCK certificate chain and checks TCB status and CRL during TDX quote verification. |
+| Trustee cluster (AMD SEV-SNP) | `kdsintf.amd.com` | AMD Key Distribution Service (KDS) — fetches the VCEK (Versioned Chip Endorsement Key) certificate used to verify SEV-SNP attestation reports against AMD's root CA. |
 | Trustee cluster | `nras.attestation.nvidia.com` | NVIDIA Remote Attestation Service — verifies GPU attestation reports |
 | Trustee cluster | `rim.attestation.nvidia.com` | NVIDIA RIM Service — fetches GPU firmware reference integrity manifests |
 | Trustee cluster | `ocsp.ndis.nvidia.com` | NVIDIA OCSP — GPU certificate revocation checks |
 
-> In a restricted network environment, `api.trustedservices.intel.com` can be replaced by a locally deployed PCCS instance (see the note in the hardware prerequisite section). Local mirroring of the NVIDIA RIM and OCSP services may also be possible — refer to the [NVIDIA Attestation documentation](https://docs.nvidia.com/attestation/index.html) for details.
+> In a restricted network environment, `api.trustedservices.intel.com` can be replaced by a locally deployed PCCS instance (see the note in the hardware prerequisite section). AMD does not provide an equivalent local caching service for KDS, but VCEK certificates can be pre-fetched and cached. Local mirroring of the NVIDIA RIM and OCSP services may also be possible — refer to the [NVIDIA Attestation documentation](https://docs.nvidia.com/attestation/index.html) for details.
 
 ### Required user permissions
 
