@@ -207,7 +207,11 @@ flowchart LR
             Gradio["Gradio UI\nport 7860"]:::rhOutline
             UNet["U-Net ResNet-50\nNVIDIA GPU CC mode\nGPU via PCI passthrough"]:::rhRed
             Plot["Matplotlib facies plot"]:::rhOutline
-            Agent --> ModelPull --> Gradio --> UNet --> Plot
+            Agent --> ModelPull
+            ModelPull -->|decrypted model| UNet
+            Gradio -->|seismic input| UNet
+            UNet -->|inference result| Plot
+            Plot -->|facies image| Gradio
         end
     end
 
