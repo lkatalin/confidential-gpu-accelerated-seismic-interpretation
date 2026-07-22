@@ -1,6 +1,6 @@
 # Confidential GPU-Accelerated Seismic Interpretation
 
-AI-powered rock type classification from North Sea seismic data — running with a three-factor attested, encrypted model in a confidential container on OpenShift AI. Upload a `.npy` seismic section and receive a colour-coded facies classification in seconds.
+AI-powered classification from North Sea seismic data — running with a three-factor attested, encrypted model in a confidential container on OpenShift AI.
 
 ## Table of contents
 
@@ -74,19 +74,16 @@ AI-driven seismic facies classification changes this:
 
 **The downstream impact is significant.** A better rock type map leads to better well placement decisions — and a single well in the North Sea costs $50M–$150M to drill. AI-assisted interpretation directly reduces the risk of drilling in the wrong location.
 
-**Why confidential computing matters here.** Seismic data is among the most commercially sensitive assets an oil and gas company owns. Running AI interpretation on proprietary field data in a shared cloud or on-premises cluster exposes that data to the underlying infrastructure. Confidential computing hardware encrypts the memory of the inference process — the seismic data and model weights are never visible to the host OS, hypervisor, or other tenants, even with physical access to the node. This quickstart uses Intel® TDX (Trust Domain Extensions) for CPU memory encryption, but the same pattern applies to AMD SEV-SNP on AMD EPYC platforms. The NVIDIA H100 extends this protection to the GPU: when running in Confidential Computing mode, GPU memory and the PCIe bus between CPU and GPU are also encrypted, closing the gap that would otherwise exist between the CPU Trust Domain and the accelerator.
-
-**Why an encrypted model matters.** The pre-trained U-Net ResNet-50 model is published to quay.io as an encrypted ModelCar OCI image. The AES-256-CBC decryption key is held by a Key Broker Server (KBS) that will only release it after three independent attestation checks pass: the **application container** (`quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-app:v1`) must be signed by the model owner — proving that the code receiving the key is trusted — the GPU must be confirmed to be running in NVIDIA Confidential Computing mode, and the CPU must be confirmed to be running in a hardware-verified Trust Domain (Intel® TDX or AMD SEV-SNP). The ModelCar image is signed separately to verify the integrity of the encrypted artifact in the registry. Together, this means the model weights are protected both at rest (encrypted in the registry) and in transit (decrypted only inside the hardware Trust Domain by a specific, verified application), and the inference workload cannot be redirected to an unattested or untrusted container.
+**Why confidential computing matters here.** Seismic data is among the most commercially sensitive assets an oil and gas company owns. Running AI interpretation on proprietary field data in a shared cloud or on-premises cluster exposes that data to the underlying infrastructure. Confidential computing hardware encrypts the memory of the inference process — the seismic data and model weights are never visible to the host OS, hypervisor, or any user with physical access to the node. To prevent authorized users of the application from exfiltrating decrypted data via a shell, the Kata agent running inside the Trust Domain is configured with a policy that forbids exec and terminal access into the container. This exec-deny policy is embedded in the container's initdata, whose hash is included in the TEE attestation evidence — the KBS will only release the model decryption key to a pod carrying the correct initdata hash, making exec prevention a cryptographically enforced condition of key release rather than a Kubernetes policy that an administrator could bypass. This quickstart uses Intel® TDX (Trust Domain Extensions) or AMD SEV-SNP on AMD EPYC platforms for CPU memory encryption. NVIDIA data center GPUs that support Confidential Computing mode (H100, H200, B100 and later) extend this protection to the GPU: GPU memory and the PCIe bus between CPU and GPU are also encrypted, closing the gap that would otherwise exist between the CPU Trust Domain and the accelerator.
 
 ### What this quickstart provides
 
-- ✓ A browser-based application for uploading, classifying, and visualising seismic data — no command line required
+- ✓ A browser-based application for uploading, classifying, and visualising seismic data
 - ✓ A U-Net ResNet-50 model trained on the Dutch F3 benchmark dataset (MIT license — commercial use permitted), published as an AES-256-CBC encrypted ModelCar OCI image at `quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-model:v1`
 - ✓ A [Trustee](https://github.com/confidential-containers/trustee) Key Broker Server that enforces a three-factor attestation policy before releasing the model decryption key
-- ✓ Inference running inside a **Kata confidential container** backed by **Intel® TDX or AMD SEV-SNP** — seismic data and decrypted model weights protected in encrypted memory
+- ✓ Inference running inside a **Kata confidential container** backed by **Intel® TDX or AMD SEV-SNP** — seismic data and decrypted model weights protected in encrypted CPU memory, with GPU memory and the PCIe bus also encrypted via **NVIDIA Confidential Computing mode**
 - ✓ GPU passthrough to the hardware Trust Domain via `kata-cc-nvidia-gpu` runtime
 - ✓ Colour-coded facies cross-section displayed in the browser alongside the seismic input
-- ✓ A `make encrypt-model` target for publishing your own encrypted, signed ModelCar (see [Optional: Encrypt and publish your own model](#optional-encrypt-and-publish-your-own-model))
 
 ### What you'll build
 
@@ -94,7 +91,7 @@ A containerised web application running on OpenShift that:
 
 1. Pulls an encrypted ModelCar OCI image from `quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-model:v1`
 2. Verifies a three-factor attestation policy via the Key Broker Server — the application container (`conf-gpu-accel-seismic-interp-app:v1`) must be cosign-signed by the model owner, the GPU must be in NVIDIA CC mode, and the CPU must be in a hardware TEE (Intel® TDX or AMD SEV-SNP) — and receives the AES-256-CBC decryption key only if all three pass
-3. Decrypts the model weights inside the hardware Trust Domain — in encrypted memory, never on disk in plaintext
+3. Decrypts the model weights inside the hardware Trust Domain — in encrypted memory
 4. Presents a browser UI where a user uploads a `.npy` seismic section (depth × crossline, float32)
 5. Runs U-Net ResNet-50 inference on a GPU, classifying every pixel as one of six North Sea rock types
 6. Displays a colour-coded facies classification alongside the seismic input in the browser
@@ -110,14 +107,14 @@ A containerised web application running on OpenShift that:
 
 **Confidential computing**
 - [Intel® TDX (Trust Domain Extensions)](https://www.intel.com/content/www/us/en/developer/tools/trust-domain-extensions/overview.html) or [AMD SEV-SNP](https://www.amd.com/en/developer/sev.html) — hardware-level CPU memory encryption for the inference process
-- [NVIDIA Confidential Computing](https://www.nvidia.com/en-us/data-center/solutions/confidential-computing/) — H100 GPU running in CC mode, attestation via NVIDIA Remote Attestation Service (NRAS)
+- [NVIDIA Confidential Computing](https://www.nvidia.com/en-us/data-center/solutions/confidential-computing/) — NVIDIA GPU running in CC mode (H100, H200, B100 and later), attestation via NVIDIA Remote Attestation Service (NRAS)
 - [Kata Containers](https://katacontainers.io/) with `kata-cc-nvidia-gpu` runtime — GPU passthrough into the hardware Trust Domain
 - [Trustee (KBS)](https://github.com/confidential-containers/trustee) — Key Broker Server enforcing three-factor attestation before releasing the model decryption key
 - [Cosign / Sigstore](https://docs.sigstore.dev/cosign/overview/) — container image signing, verified as part of the KBS attestation policy
 
 **Platform**
 - [Red Hat OpenShift](https://www.redhat.com/en/technologies/cloud-computing/openshift) with the OpenShift sandboxed containers operator
-- NVIDIA H100 with physical GPU (`pgpu`) passthrough and NVIDIA CC mode enabled
+- NVIDIA GPU with Confidential Computing mode support (H100, H200, B100 and later) with physical GPU (`pgpu`) passthrough and NVIDIA CC mode enabled
 
 **Application**
 - [Gradio](https://www.gradio.app/) — browser-based file upload, visualisation, and download UI
@@ -160,14 +157,14 @@ flowchart LR
     subgraph Pod["OpenShift Pod · kata-cc-nvidia-gpu"]
         direction TB
         subgraph Init1["init-attestation  init container 1"]
-            Agent["Attestation Agent\nCPU TEE quote TDX or SEV-SNP\nNVIDIA NRAS report H100 CC mode\nconf-gpu-accel-seismic-interp-app:v1 image digest + cosign sig"]:::default
+            Agent["Attestation Agent\nCPU TEE quote TDX or SEV-SNP\nNVIDIA NRAS report GPU CC mode\nconf-gpu-accel-seismic-interp-app:v1 image digest + cosign sig"]:::default
         end
         subgraph Init2["init-model  init container 2"]
             ModelPull["Pull encrypted ModelCar from quay.io\nDecrypt into TEE-encrypted memory\nMount at /models-cache"]:::default
         end
         subgraph CC["Kata Confidential Container · hardware Trust Domain · Encrypted Memory TDX or SEV-SNP"]
             Gradio["Gradio UI\nport 7860"]:::rhOutline
-            UNet["U-Net ResNet-50\nNVIDIA H100 CC mode\nGPU via PCI passthrough"]:::rhRed
+            UNet["U-Net ResNet-50\nNVIDIA GPU CC mode\nGPU via PCI passthrough"]:::rhRed
             Plot["Matplotlib facies plot"]:::rhOutline
         end
         Init1 --> Init2 --> CC
@@ -194,7 +191,7 @@ flowchart LR
 
 | Component | Minimum | Notes |
 |---|---|---|
-| GPU | NVIDIA H100 (80GB SXM or PCIe) | H100 required for NVIDIA CC mode and NRAS attestation. Consumer GPUs (RTX 3090, RTX 4090) do not support CC mode and cannot pass the NVIDIA attestation check. |
+| GPU | NVIDIA GPU with Confidential Computing mode support (e.g. H100, H200, B100) | Hopper architecture and later support NVIDIA CC mode and NRAS attestation. Consumer GPUs (RTX 3090, RTX 4090) and older data center GPUs (A100) do not support CC mode and cannot pass the NVIDIA attestation check. |
 | CPU | Intel® Xeon 5th Gen+ (Emerald Rapids) with TDX, or AMD EPYC 9004 series (Genoa) with SEV-SNP | TEE must be enabled in the BIOS. Earlier CPU generations may not support TDX or SEV-SNP. |
 | RAM | 64GB | |
 | Storage | 50GB | For ModelCar image cache |
@@ -207,8 +204,7 @@ flowchart LR
 |---|---|---|
 | OpenShift Container Platform | 4.21.9+ | Required by OpenShift Sandboxed Containers 1.12 with confidential containers support |
 | Red Hat OpenShift AI | 3.4+ | Provides the model serving stack and manages the NVIDIA GPU Operator and CUDA runtime — install via OperatorHub |
-| NVIDIA GPU Operator | Latest | Manages GPU drivers, CUDA, and CC mode on H100 nodes; installed and managed by OpenShift AI |
-| Trustee (KBS) | Latest | `confidential-containers/trustee` — Key Broker Server, deployed as part of this quickstart |
+| Trustee (KBS) | 1.1.0 | `confidential-containers/trustee` — Key Broker Server, deployed as part of this quickstart |
 | Cosign | 2.0+ | For verifying model image signatures; installed locally for the optional encrypt step |
 
 ### Required user permissions
@@ -480,9 +476,11 @@ oc get node <node-name> --show-labels | tr ',' '\n' | grep -E "tdx|snp"
 
 If the label is not present, the BIOS settings are not correctly saved — revisit the hardware prerequisite section.
 
+> For more details on configuring NFD for kata containers, see the [OpenShift Sandboxed Containers 1.12 documentation](https://docs.redhat.com/en/documentation/openshift_sandboxed_containers/1.12).
+
 #### Step 2: Install OpenShift Sandboxed Containers
 
-> **NOTE:** If KBS and the app run on separate clusters, perform this step on the app cluster, not the KBS cluster. The KBS cluster does not need OSC.
+> **NOTE:** In production, Trustee should run on a dedicated trusted cluster, separate from the cluster running the application workload. The application cluster is considered untrusted — Trustee releases the model decryption key only after the workload passes attestation ensuring that all requirements have been met. This quickstart deploys both Trustee and the application on the same cluster to simplify getting started. If you are running Trustee on a separate trusted cluster, perform this step on the application cluster only — the Trustee cluster does not need OpenShift Sandboxed Containers installed.
 
 > **WARNING:** Applying the KataConfig triggers a node reboot rollout. Worker nodes will restart one at a time and this takes 10–20 minutes. Do not do this during a maintenance window freeze.
 
@@ -842,7 +840,7 @@ Open the printed URL in your browser.
 
 #### Run classification
 
-The U-Net ResNet-50 model classifies every pixel in the uploaded section as one of six North Sea rock types. Classification runs on the H100 GPU and completes in seconds.
+The U-Net ResNet-50 model classifies every pixel in the uploaded section as one of six North Sea rock types. Classification runs on the GPU and completes in seconds.
 
 **Expected outcome:**
 - ✓ A side-by-side image is displayed: seismic input (greyscale) on the left, colour-coded facies prediction on the right
@@ -1011,13 +1009,13 @@ Then re-run the deploy steps from [Step 4](#step-4-deploy-the-application) onwar
 ### What you've accomplished
 
 **Deployed a fully attested confidential AI pipeline for geoscience:**
-- ✓ The model decryption key was released only after three independent attestation checks passed: the application container (`conf-gpu-accel-seismic-interp-app:v1`) cosign signature verified by the model owner's key, NVIDIA CC mode confirmed on the H100, and CPU TEE verified (Intel® TDX or AMD SEV-SNP)
+- ✓ The model decryption key was released only after three independent attestation checks passed: the application container (`conf-gpu-accel-seismic-interp-app:v1`) cosign signature verified by the model owner's key, NVIDIA CC mode confirmed on the GPU, and CPU TEE verified (Intel® TDX or AMD SEV-SNP)
 - ✓ The model weights were encrypted at rest in quay.io and decrypted only inside the hardware Trust Domain — never exposed on disk or in untrusted memory
 - ✓ Seismic data uploaded by the user was processed entirely within TEE-encrypted memory
 - ✓ Produced a rock type classification for a seismic section in seconds
 
 **Demonstrated GPU value on a real workload:**
-- ✓ Inference ran in approximately 1–2 minutes at 80–100% GPU utilisation on the H100 via PCI passthrough into the hardware Trust Domain
+- ✓ Inference ran in approximately 1–2 minutes at 80–100% GPU utilisation via PCI passthrough into the hardware Trust Domain
 - ✓ The same classification would take hours on CPU
 
 **Connected AI output to business decisions:**
@@ -1061,7 +1059,7 @@ oc delete namespace openshift-nfd
 * **Use case:** Predictive modelling, seismic facies classification, confidential AI inference, encrypted model distribution
 * **Model:** U-Net ResNet-50 (segmentation-models-pytorch) — MIT license — published as AES-256-CBC encrypted ModelCar OCI image
 * **Dataset:** Dutch F3 Benchmark Dataset — MIT license
-* **GPU:** NVIDIA H100 with CC mode and PCI passthrough into hardware Trust Domain
+* **GPU:** NVIDIA GPU with Confidential Computing mode (H100, H200, B100 and later) with PCI passthrough into hardware Trust Domain
 * **Attestation:** Three-factor — CPU TEE (Intel® TDX or AMD SEV-SNP) + NVIDIA NRAS (GPU) + Cosign image signature
 * **Industry:** Energy / Oil & Gas
 * **Difficulty:** Intermediate
