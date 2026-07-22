@@ -174,61 +174,50 @@ A containerised web application running on OpenShift that:
 
 ```mermaid
 flowchart LR
-    %% Red Hat Class Definitions
     classDef default fill:#F0F0F0,stroke:#EE0000,stroke-width:2px,color:#151515;
     classDef rhRed fill:#EE0000,stroke:#C90000,stroke-width:2px,color:#FFFFFF;
     classDef rhBlack fill:#151515,stroke:#000000,stroke-width:2px,color:#FFFFFF;
     classDef rhOutline fill:#FFFFFF,stroke:#151515,stroke-width:2px,color:#151515;
 
-    Browser["User browser\nupload .npy / view facies classification"]:::rhBlack
-    Route["OpenShift Route HTTPS"]:::rhRed
+    Browser["User browser\nupload .npy / view facies\nclassification"]:::rhBlack
+    Route["OpenShift Route\nHTTPS"]:::rhRed
     Browser -->|HTTPS| Route
 
-    subgraph Quay["quay.io/rh-ai-quickstart  supply chain integrity"]
+    subgraph Quay["quay.io  supply chain integrity"]
         ModelCar["ModelCar OCI image\ndutchf3_unet_final.pth.enc\nAES-256-CBC encrypted"]:::rhOutline
     end
 
     subgraph Trustee["Trustee"]
         direction TB
-        subgraph AS["Attestation Service AS"]
-            ASVerify["Verifies evidence bundle\n• cosign sig on conf-gpu-accel-seismic-interp-app:v1\n• NVIDIA CC report\n• CPU TEE TD quote\nreturns verified claims"]:::default
-        end
-        subgraph KBS["Key Broker Service KBS"]
-            KBSPolicy["Evaluates OPA Rego policy\nagainst AS verified claims\nreleases AES-256-CBC key if all pass"]:::rhRed
-        end
+        ASVerify["Attestation Service AS\n• verifies cosign sig\n• verifies NVIDIA CC report\n• verifies CPU TEE quote\nreturns verified claims"]:::default
+        KBSPolicy["Key Broker Service KBS\nevaluates OPA Rego policy\nreleases AES-256-CBC key\nif all checks pass"]:::rhRed
         ASVerify -->|verified claims| KBSPolicy
     end
 
     NRAS["NVIDIA NRAS\nexternal"]:::rhBlack
-    PCS["Intel PCS (TDX) · AMD KDS (SEV-SNP)\nexternal"]:::rhBlack
+    PCS["Intel PCS (TDX)\nAMD KDS (SEV-SNP)\nexternal"]:::rhBlack
     ASVerify -->|validate GPU CC report| NRAS
     ASVerify -->|validate CPU TEE quote| PCS
 
     subgraph Pod["OpenShift Pod · kata-cc-nvidia-gpu"]
-        direction TB
-        subgraph Init1["init-attestation  init container 1"]
-            Agent["Attestation Agent\nCPU TEE quote TDX or SEV-SNP\nNVIDIA NRAS report GPU CC mode\nconf-gpu-accel-seismic-interp-app:v1 image digest + cosign sig"]:::default
-        end
-        subgraph Init2["init-model  init container 2"]
-            ModelPull["Pull encrypted ModelCar from quay.io\nDecrypt into TEE-encrypted memory\nMount at /models-cache"]:::default
-        end
-        subgraph CC["Kata Confidential Container · hardware Trust Domain · Encrypted Memory TDX or SEV-SNP"]
+        subgraph TEE["Kata VM · Hardware Trust Domain · Encrypted Memory · TDX or SEV-SNP"]
+            direction TB
+            Agent["init-attestation\nAttestation Agent\nCPU TEE quote · NVIDIA CC report\nimage digest + cosign sig"]:::default
+            ModelPull["init-model\nPull encrypted ModelCar\nDecrypt into TEE-encrypted memory\nMount at /models-cache"]:::default
             Gradio["Gradio UI\nport 7860"]:::rhOutline
             UNet["U-Net ResNet-50\nNVIDIA GPU CC mode\nGPU via PCI passthrough"]:::rhRed
             Plot["Matplotlib facies plot"]:::rhOutline
+            Agent --> ModelPull --> Gradio --> UNet --> Plot
         end
-        Init1 --> Init2 --> CC
-        Gradio --> UNet --> Plot
     end
 
     Route --> Gradio
-    Agent -->|evidence bundle| AS
-    KBSPolicy -->|AES key| Init1
+    Agent -->|"① evidence bundle"| ASVerify
+    KBSPolicy -->|"② AES key"| Agent
     ModelCar -->|pull encrypted| ModelPull
 
-    %% Subgraph Styling for cleaner boundaries
     style Pod fill:#ffffff,stroke:#151515,stroke-width:2px,stroke-dasharray: 5 5
-    style CC fill:#fdf4f4,stroke:#EE0000,stroke-width:2px
+    style TEE fill:#fdf4f4,stroke:#EE0000,stroke-width:2px
     style Trustee fill:#f9f9f9,stroke:#151515,stroke-width:1px
     style Quay fill:#f9f9f9,stroke:#151515,stroke-width:1px
 ```
