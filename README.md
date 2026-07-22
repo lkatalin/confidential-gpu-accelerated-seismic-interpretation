@@ -7,6 +7,7 @@ AI-powered classification from North Sea seismic data — running with a three-f
 - [Detailed description](#detailed-description)
   - [Who is this for?](#who-is-this-for)
   - [The business case for AI-driven seismic interpretation](#the-business-case-for-ai-driven-seismic-interpretation)
+  - [Why the cluster is not the security boundary](#why-the-cluster-is-not-the-security-boundary)
   - [What this quickstart provides](#what-this-quickstart-provides)
   - [What you'll build](#what-youll-build)
   - [Architecture diagram](#architecture-diagram)
@@ -76,6 +77,54 @@ AI-driven seismic facies classification changes this:
 **The downstream impact is significant.** A better rock type map leads to better well placement decisions — and a single well in the North Sea costs $50M–$150M to drill. AI-assisted interpretation directly reduces the risk of drilling in the wrong location.
 
 **Why confidential computing matters here.** Seismic data is among the most commercially sensitive assets an oil and gas company owns. Running AI interpretation on proprietary field data in a shared cloud or on-premises cluster exposes that data to the underlying infrastructure. Confidential computing hardware encrypts the memory of the inference process — the seismic data and model weights are never visible to the host OS, hypervisor, or any user with physical access to the node. To prevent authorized users of the application from exfiltrating decrypted data via a shell, the Kata agent running inside the Trust Domain is configured with a policy that forbids exec and terminal access into the container. This exec-deny policy is embedded in the container's initdata, whose hash is included in the TEE attestation evidence — the KBS will only release the model decryption key to a pod carrying the correct initdata hash, making exec prevention a cryptographically enforced condition of key release rather than a Kubernetes policy that an administrator could bypass. This quickstart uses Intel® TDX (Trust Domain Extensions) or AMD SEV-SNP on AMD EPYC platforms for CPU memory encryption. NVIDIA data center GPUs that support Confidential Computing mode (H100, H200, B100 and later) extend this protection to the GPU: GPU memory and the PCIe bus between CPU and GPU are also encrypted, closing the gap that would otherwise exist between the CPU Trust Domain and the accelerator.
+
+### Why the cluster is not the security boundary
+
+In a conventional container deployment, the cluster operator controls everything: the host OS, the container runtime, and the network. Any workload running on their cluster is ultimately visible to them — they can inspect container memory, attach a debugger, or intercept traffic. Trusting a workload therefore means trusting the operator of the cluster it runs on. This is the model most software assumes, and it is why sensitive AI inference is typically restricted to clusters that the data owner fully controls.
+
+Confidential computing breaks this assumption. The hardware Trust Domain (Intel® TDX or AMD SEV-SNP) is enforced by the CPU itself — the host OS and hypervisor cannot read or modify memory inside it, regardless of what privileges they hold. The model decryption key is held by Trustee, which runs on a separate trusted cluster and releases the key only after independently verifying cryptographic evidence produced inside the TEE. Trustee does not ask the cluster whether it is trustworthy — it verifies the hardware directly. This means the workload cluster can be considered fully untrusted: even if an attacker controls the entire cluster, they cannot forge a valid CPU attestation quote, cannot fake the GPU Confidential Computing mode report, and cannot produce a valid cosign signature for the application image. Without all three, Trustee will not release the key, and the model cannot be decrypted.
+
+Everything that touches sensitive data runs inside the secure VM, and none of it can be influenced by the untrusted cluster. The kata VM boots its own isolated guest kernel — separate from the host kernel that OpenShift controls — and every component inside it is part of the attestation measurement. The kata agent, which controls what processes run inside the VM, is supplied via the initdata blob whose hash KBS verifies. The Confidential Data Hub, which fetches the decryption key from KBS, runs inside the TEE and communicates with KBS over a TLS channel that the host network stack cannot intercept. The application container image is verified by cosign as part of attestation, so the cluster cannot substitute a different image without breaking the signature check. The cluster can schedule the pod and stop it, but it cannot change what runs inside the VM, modify the kata-agent policy, intercept the key in transit, or read the decrypted model from memory. The only role the untrusted cluster plays is to start the VM — everything after that is under hardware enforcement.
+
+Memory encryption alone is not sufficient — an authorized user with `oc exec`, terminal access, or `oc cp` could still extract decrypted data at runtime by interacting with the running process or copying files out of it. To close this gap, the Kata agent inside the Trust Domain is configured with a policy that forbids exec, terminal, and file copy operations entirely. This exec-deny policy is embedded in the pod's initdata blob, and the hash of that initdata is included in the TEE attestation evidence sent to Trustee. Trustee's attestation policy requires the correct initdata hash to be present before releasing the key — meaning a pod that does not include the exec-deny policy will produce a different hash, fail attestation, and never receive the decryption key. Exec prevention is therefore not a Kubernetes policy that a cluster administrator could remove; it is a cryptographically enforced condition of key release, verified by hardware.
+
+One attack surface that hardware and policy controls cannot eliminate is the behaviour of the application container itself. A container that intentionally exposes decrypted data — through an unauthenticated HTTP endpoint, an overly broad API response, or any other means — would undermine the protections above regardless of how well the TEE is configured. This is why the cosign image signature is a required attestation check: Trustee will only release the model decryption key to a container image that has been signed by the model owner's private key. The model owner is therefore responsible for ensuring that the signed image only exposes data in the intended way, and that no debug endpoints, data dump routes, or unintended egress paths exist. Any future version of the image must be re-signed by the model owner before it can receive the key — giving the model owner, not the cluster operator or application deployer, final control over what code runs inside the Trust Domain.
+
+```mermaid
+flowchart TB
+    classDef untrusted fill:#f5f5f5,stroke:#999,color:#333
+    classDef tee fill:#e8f5e9,stroke:#388e3c,color:#1b5e20
+    classDef trusted fill:#e3f2fd,stroke:#1565c0,color:#0d47a1
+    classDef external fill:#212121,stroke:#212121,color:#fff
+    classDef blocked fill:#ffebee,stroke:#c62828,color:#b71c1c
+
+    subgraph UC["Untrusted OpenShift Cluster"]
+        direction TB
+        Host["Host OS / Hypervisor\ncluster operator controls this layer"]:::untrusted
+        ExecAttempt["oc exec / terminal attempt\nby cluster admin or user"]:::blocked
+        subgraph TEE["Hardware Trust Domain · TDX or SEV-SNP\nmemory encrypted by CPU — host cannot read or write"]
+            direction TB
+            KataAgent["Kata Agent\nexec-deny policy embedded in initdata\nblocks all exec and terminal requests"]:::tee
+            AA["Attestation Agent\ncollects evidence including initdata hash"]:::tee
+            App["Application Container\ncosign-signed image"]:::tee
+            GPU["NVIDIA GPU · CC mode\nGPU memory encrypted"]:::tee
+        end
+        Host -. "hardware boundary —\ncannot cross" .-> TEE
+        ExecAttempt -- "blocked by\nKata agent policy" --> KataAgent
+    end
+
+    subgraph KC["Trusted KBS Cluster"]
+        KBS["Trustee / KBS\nverifies evidence independently\nof the workload cluster"]:::trusted
+    end
+
+    Intel["Intel PCS · NVIDIA NRAS\nCosign public key"]:::external
+
+    AA -- "① evidence bundle\nCPU TEE quote + GPU CC report\n+ image digest + cosign sig\n+ initdata hash" --> KBS
+    KBS -- "② verify against\nvendor services" --> Intel
+    KBS -- "③ all checks pass including\ninitdata hash — key released" --> AA
+    AA -- "④ key delivered\ninside encrypted memory" --> App
+    App -- "⑤ model decrypted\ninside TEE only" --> GPU
+```
 
 ### What this quickstart provides
 
