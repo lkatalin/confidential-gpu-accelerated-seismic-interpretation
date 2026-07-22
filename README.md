@@ -16,19 +16,19 @@ AI-powered rock type classification from North Sea seismic data — running with
   - [Required user permissions](#required-user-permissions)
 - [Deploy](#deploy)
   - [Clone the repository](#clone-the-repository)
-  - [Part 1: Platform setup (cluster-admin, once per cluster)](#part-1-platform-setup-cluster-admin-once-per-cluster)
-    - [Hardware prerequisite: Enable TEE in server firmware](#hardware-prerequisite-enable-tee-in-server-firmware)
-    - [Step 1: Enable TEE kernel parameters](#step-1-enable-tee-kernel-parameters)
-    - [Step 2: Install Node Feature Discovery](#step-2-install-node-feature-discovery)
-    - [Step 3: Install OpenShift Sandboxed Containers](#step-3-install-openshift-sandboxed-containers)
-    - [Step 4: Install the Trustee operator](#step-4-install-the-trustee-operator)
-    - [Step 4a: Create the kbs-auth-public-key Secret](#step-4a-create-the-kbs-auth-public-key-secret)
-    - [Step 4b: Create the trustee-tls-cert Secret](#step-4b-create-the-trustee-tls-cert-secret)
-    - [Step 5: Deploy KBS](#step-5-deploy-kbs)
-    - [Step 6: Verify the KBS route](#step-6-verify-the-kbs-route)
-    - [Step 7: Configure the attestation policy](#step-7-configure-the-attestation-policy)
-    - [Step 8: Register app-specific secrets with KBS](#step-8-register-app-specific-secrets-with-kbs)
-  - [Part 2: Application deployment (namespace admin)](#part-2-application-deployment-namespace-admin)
+  - [Hardware prerequisite: Enable TEE in server firmware and kernel parameters](#hardware-prerequisite-enable-tee-in-server-firmware-and-kernel-parameters)
+  - [Kata containers setup (cluster-admin, once per cluster)](#kata-containers-setup-cluster-admin-once-per-cluster)
+    - [Step 1: Install Node Feature Discovery](#step-1-install-node-feature-discovery)
+    - [Step 2: Install OpenShift Sandboxed Containers](#step-2-install-openshift-sandboxed-containers)
+  - [Trustee setup (cluster-admin, once per cluster)](#trustee-setup-cluster-admin-once-per-cluster)
+    - [Step 1: Install the Trustee operator](#step-1-install-the-trustee-operator)
+    - [Step 2: Create the kbs-auth-public-key Secret](#step-2-create-the-kbs-auth-public-key-secret)
+    - [Step 3: Create the cert-manager Issuer and TLS Certificates](#step-3-create-the-cert-manager-issuer-and-tls-certificates)
+    - [Step 4: Deploy KBS](#step-4-deploy-kbs)
+    - [Step 5: Verify the KBS route](#step-5-verify-the-kbs-route)
+    - [Step 6: Configure the attestation policy](#step-6-configure-the-attestation-policy)
+    - [Step 7: Register app-specific secrets with KBS](#step-7-register-app-specific-secrets-with-kbs)
+  - [Application deployment (namespace admin)](#application-deployment-namespace-admin)
     - [Step 1: Create the project](#step-1-create-the-project)
     - [Step 2: Deploy the application](#step-2-deploy-the-application)
     - [Step 3: Get the application URL](#step-3-get-the-application-url)
@@ -243,33 +243,9 @@ cd confidential-gpu-accelerated-seismic-interpretation
 
 Sample `.npy` seismic sections from the Dutch F3 dataset are included in the `samples/` directory of the repository — use these to try the application without any additional data download.
 
-### Part 1: Platform setup (cluster-admin, once per cluster)
+### Hardware prerequisite: Enable TEE in server firmware and kernel parameters
 
-This is a cluster-admin, once-per-cluster operation. To perform all steps automatically:
-
-```bash
-# 1. After enabling TDX/SNP in server BIOS (see hardware prerequisite below):
-make setup-intel-tee    # Intel Xeon with TDX
-# or
-make setup-amd-tee      # AMD EPYC with SEV-SNP
-
-# 2. After setup-intel-tee / setup-amd-tee completes:
-make setup-kata
-
-# 3. After setup-kata completes:
-make setup-trustee-in-cluster
-```
-
-Or follow the manual steps below using the OpenShift web console and `oc` commands.
-
-**Prerequisites:**
-- Logged in as cluster-admin
-- NVIDIA GPU Operator already installed (verify: **Operators → Installed Operators → namespace `nvidia-gpu-operator` → status Succeeded**)
-- TEE enabled in server firmware (see hardware prerequisite below)
-
-#### Hardware prerequisite: Enable TEE in server firmware
-
-Confidential containers require a hardware Trusted Execution Environment (TEE). This is a one-time server configuration done via your BMC/IPMI console by whoever manages the bare metal hosts. It must be completed before running any of the steps below.
+Confidential containers require a hardware Trusted Execution Environment (TEE). This is a one-time server configuration done via your BMC/IPMI console by whoever manages the bare metal hosts. The BIOS settings and kernel parameters must be applied before running Part 1.
 
 **Intel TDX (Intel Xeon Scalable 4th Gen / Sapphire Rapids or later)**
 
@@ -303,7 +279,19 @@ Access the BIOS setup utility and enable SEV-SNP under the memory/security setti
 oc debug node/<node-name> -- chroot /host dmesg | grep -i snp
 ```
 
-#### Step 1: Enable TEE kernel parameters
+To apply the kernel parameters automatically (cluster-admin required):
+
+```bash
+make setup-intel-tee    # Intel Xeon with TDX
+# or
+make setup-amd-tee      # AMD EPYC with SEV-SNP
+```
+
+Or follow the manual steps below.
+
+**Prerequisites:**
+- Logged in as cluster-admin
+- NVIDIA GPU Operator already installed (verify: **Operators → Installed Operators → namespace `nvidia-gpu-operator` → status Succeeded**)
 
 The node must boot with TDX kernel parameters active before the OSC operator can install kata-cc. This step applies two MachineConfigs and triggers a node reboot.
 
@@ -371,7 +359,27 @@ oc debug node/<node-name> -- chroot /host dmesg | grep -i tdx
 # Expected: "virt/tdx: BIOS enabled" and "virt/tdx: module initialized"
 ```
 
-#### Step 2: Install Node Feature Discovery
+---
+
+### Kata containers setup (cluster-admin, once per cluster)
+
+NFD and OSC together enable confidential kata containers on the node. NFD detects the active TEE hardware and labels the node; OSC uses that label to install the `kata-cc` and `kata-cc-nvidia-gpu` runtimeClasses.
+
+To perform automatically (after the hardware prerequisite above is complete):
+
+```bash
+make setup-kata
+```
+
+Or follow the manual steps below.
+
+**Prerequisites:**
+- Logged in as cluster-admin
+- TEE kernel parameters active (hardware prerequisite above complete, node rebooted)
+- NVIDIA GPU Operator already installed
+
+
+#### Step 1: Install Node Feature Discovery
 
 NFD labels cluster nodes with hardware capabilities (GPU, CPU features, and TEE type). Installing NFD after the TDX kernel parameters are active means it detects TDX immediately on first run. This is required for GPU workloads, for the `kata-cc-nvidia-gpu` runtimeClass that OSC creates, and for the OSC operator to detect which TEE platform is present.
 
@@ -468,7 +476,7 @@ oc get node <node-name> --show-labels | tr ',' '\n' | grep -E "tdx|snp"
 
 If the label is not present, the BIOS settings are not correctly saved — revisit the hardware prerequisite section.
 
-#### Step 3: Install OpenShift Sandboxed Containers
+#### Step 2: Install OpenShift Sandboxed Containers
 
 > **NOTE:** If KBS and the app run on separate clusters, perform this step on the app cluster, not the KBS cluster. The KBS cluster does not need OSC.
 
@@ -556,7 +564,24 @@ oc get runtimeclass | grep kata
 - ✓ `kata-cc` runtimeClass listed
 - ✓ `kata-cc-nvidia-gpu` runtimeClass listed
 
-#### Step 4: Install the Trustee operator
+---
+
+### Trustee setup (cluster-admin, once per cluster)
+
+To perform automatically (after Part 1 is complete):
+
+```bash
+make setup-trustee-in-cluster
+```
+
+Or follow the manual steps below.
+
+**Prerequisites:**
+- Logged in as cluster-admin
+- `kata-cc` runtimeClass available (Kata containers setup above complete)
+- cert-manager installed (`openshift-cert-manager-operator` namespace)
+
+#### Step 1: Install the Trustee operator
 
 1. Go to **Operators → OperatorHub**
 2. Search for "trustee"
@@ -569,7 +594,7 @@ oc get runtimeclass | grep kata
 9. Click **Install**, then go to **Operators → Installed Operators**, select namespace `trustee-operator-system`, click **Upgrade available** and approve the InstallPlan
 10. Wait until the status shows **Succeeded**
 
-#### Step 4a: Create the kbs-auth-public-key Secret
+#### Step 2: Create the kbs-auth-public-key Secret
 
 KBS will not start without an Ed25519 key pair. Run this once from any machine with `oc` access:
 
@@ -584,7 +609,7 @@ rm /tmp/kbs-private.pem /tmp/kbs-public.pem
 
 The private key is discarded immediately — KBS only needs the public key to verify client attestation tokens.
 
-#### Step 4b: Create the cert-manager Issuer and TLS Certificates
+#### Step 3: Create the cert-manager Issuer and TLS Certificates
 
 The Trustee operator requires `trustee-tls-cert` and `trustee-token-cert` Secrets to exist before it will deploy KBS. These are issued by cert-manager in response to `Issuer` and `Certificate` resources that must be created before `TrusteeConfig` is applied.
 
@@ -598,7 +623,7 @@ The script creates a self-signed `Issuer`, an RSA `Certificate` for KBS HTTPS (s
 
 The `trustee-tls-cert` certificate is also embedded in the initdata blob by `make install` — the Confidential Data Hub inside the kata VM uses it to verify the KBS TLS connection.
 
-#### Step 5: Deploy KBS
+#### Step 4: Deploy KBS
 
 1. Go to **Operators → Installed Operators**, select namespace `trustee-operator-system`
 2. Click **Trustee Operator**, then click the **TrusteeConfig** tab
@@ -623,15 +648,15 @@ spec:
 5. Click **Create**
 6. Go to **Workloads → Pods**, select namespace `trustee-operator-system`, and wait for `trustee-deployment-*` to show **Running**
 
-#### Step 6: Verify the KBS route
+#### Step 5: Verify the KBS route
 
-The Trustee operator creates a passthrough TLS Route named `kbs-route` automatically when it processes the TrusteeConfig. Verify it exists and note its hostname — you will need it in Step 9:
+The Trustee operator creates a passthrough TLS Route named `kbs-route` automatically when it processes the TrusteeConfig. Verify it exists and note its hostname — you will need it in Step 7:
 
 ```bash
 oc get route kbs-route -n trustee-operator-system -o jsonpath='{.spec.host}'
 ```
 
-#### Step 7: Configure the attestation policy
+#### Step 6: Configure the attestation policy
 
 The Trustee operator created a KbsConfig named `trusteeconfig-kbs-config` when it processed the TrusteeConfig above. Apply the ConfigMaps first, then update KbsConfig to reference them.
 
@@ -727,7 +752,7 @@ EOF
 ```
 5. Go to **Workloads → Pods** and wait for `trustee-deployment-*` to restart and return to **Running**
 
-#### Step 8: Register app-specific secrets with KBS
+#### Step 7: Register app-specific secrets with KBS
 
 The KBS has no web UI for secret registration. These three `curl` commands register the model key, cosign public key, and image verification policy directly against the KBS REST API. Get the KBS route hostname from Step 6, then run from a terminal with `MODEL_ENCRYPTION_KEY` set and `cosign.pub` present:
 
@@ -754,13 +779,13 @@ printf '{"default":[{"type":"reject"}],"transports":{"docker":{"%s":[{"type":"si
 
 Or equivalently: `make setup-attestation NAMESPACE=$NAMESPACE KBS_URL=https://$KBS_ROUTE`
 
-> `make setup-intel-tee` (or `make setup-amd-tee`) runs Step 1. `make setup-kata` runs Steps 2–3. `make setup-trustee-in-cluster` runs Steps 4–7 automatically. `make setup-attestation` performs Step 8.
+> `make setup-intel-tee` (or `make setup-amd-tee`) runs the hardware prerequisite kernel parameter step. `make setup-kata` runs Part 1 Steps 1–2. `make setup-trustee-in-cluster` runs Trustee setup Steps 1–6 automatically. `make setup-attestation` performs Trustee setup Step 7.
 
 ---
 
-### Part 2: Application deployment (namespace admin)
+### Application deployment (namespace admin)
 
-These steps require only `admin` access on the target namespace and `self-provisioner` to create projects. No cluster-admin access is needed after Part 1 is complete.
+These steps require only `admin` access on the target namespace and `self-provisioner` to create projects. No cluster-admin access is needed after Trustee setup is complete.
 
 #### Step 1: Create the project
 
