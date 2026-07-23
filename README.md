@@ -104,10 +104,13 @@ flowchart TB
         ExecAttempt["oc exec / terminal attempt\nby cluster admin or user"]:::blocked
         subgraph TEE["Hardware Trust Domain · TDX or SEV-SNP\nmemory encrypted by CPU — host cannot read or write"]
             direction TB
+            CPU["CPU Hardware · Intel TDX or AMD SEV-SNP\ngenerates hardware-signed TEE quote\nmeasures guest kernel · initdata · VM config\ncannot be forged — signed by hardware key"]:::tee
             KataAgent["Kata Agent\nexec-deny policy embedded in initdata\nblocks all exec and terminal requests"]:::tee
-            AA["Attestation Agent\ncollects evidence including initdata hash"]:::tee
+            AA["Attestation Agent\ncollects TEE quote from CPU hardware\ncollects CC report from GPU hardware\nforwards evidence bundle + initdata hash"]:::tee
             App["Application Container\ncosign-signed image"]:::tee
-            GPU["NVIDIA GPU · CC mode\nGPU memory encrypted"]:::tee
+            GPU["NVIDIA GPU · CC mode\ngenerates hardware-signed CC report\nverified by NVIDIA NRAS\nGPU memory encrypted"]:::tee
+            CPU -- "TEE quote\nhardware-signed" --> AA
+            GPU -- "CC report\nhardware-signed" --> AA
         end
         Host -. "hardware boundary —\ncannot cross" .-> TEE
         ExecAttempt -- "blocked by\nKata agent policy" --> KataAgent
@@ -119,9 +122,9 @@ flowchart TB
 
     Intel["Intel PCS (TDX)\nAMD KDS (SEV-SNP)\nNVIDIA NRAS · NVIDIA RIM\nCosign public key"]:::external
 
-    AA -- "① evidence bundle\nCPU TEE quote + GPU CC report\n+ image digest + cosign sig\n+ initdata hash" --> KBS
+    AA -- "① evidence bundle\nCPU TEE quote (hardware-signed)\nGPU CC report (hardware-signed)\n+ image digest + cosign sig\n+ initdata hash" --> KBS
     KBS -- "② verify against\nvendor services" --> Intel
-    KBS -- "③ all checks pass including\ninitdata hash — key released" --> AA
+    KBS -- "③ hardware · configuration · executables\nall affirming — key released" --> AA
     AA -- "④ key delivered\ninside encrypted memory" --> App
     App -- "⑤ model decrypted\ninside TEE only" --> GPU
 ```
@@ -660,6 +663,7 @@ Or follow the manual steps below.
 - Logged in as cluster-admin
 - `kata-cc` runtimeClass available (Kata containers setup above complete)
 - cert-manager installed (`openshift-cert-manager-operator` namespace)
+- NVIDIA NGC API key for NRAS — required for GPU CC attestation verification. Obtain one at [ngc.nvidia.com](https://ngc.nvidia.com) (free account). Without this, the Trustee AS cannot contact NRAS to verify the GPU CC report, and attestation will fail the `hardware` check.
 
 #### Step 1: Install the Trustee operator
 
@@ -688,6 +692,26 @@ rm /tmp/kbs-private.pem /tmp/kbs-public.pem
 ```
 
 The private key is discarded immediately — KBS only needs the public key to verify client attestation tokens.
+
+#### Step 2a: Create the NRAS API key Secret
+
+The Trustee Attestation Service contacts NVIDIA NRAS (`nras.attestation.nvidia.com`) to verify GPU CC reports. NRAS requires authentication with an NGC API key.
+
+Obtain a free NGC API key at [ngc.nvidia.com](https://ngc.nvidia.com) (create an account, then go to **Account → Setup → Generate API Key**). Then create the Secret:
+
+```bash
+oc create secret generic nras-api-key \
+    -n trustee-operator-system \
+    --from-literal=apiKey=<your-ngc-api-key>
+```
+
+Or pass the key to `make setup-trustee-in-cluster`:
+
+```bash
+make setup-trustee-in-cluster NRAS_API_KEY=<your-ngc-api-key>
+```
+
+Without this Secret, the Trustee AS cannot verify GPU CC reports, and the attestation policy will reject pods because the `hardware` trustworthiness claim will not reach the affirming range.
 
 #### Step 3: Create the cert-manager Issuer and TLS Certificates
 
@@ -758,9 +782,28 @@ data:
 
     allow if {
         count(input.submods) > 0
+        not hardware_failing
+        not configuration_failing
         not executable_failing
     }
 
+    # hardware: CPU TEE hardware quote verified (Intel TDX or AMD SEV-SNP)
+    # and NVIDIA GPU CC report verified via NRAS
+    hardware_failing if {
+        some _, submod in input.submods
+        hardware := submod["ear.trustworthiness-vector"]["hardware"]
+        not in_affirming_range(hardware)
+    }
+
+    # configuration: initdata hash binding verified — ensures the exec-deny
+    # policy and KBS endpoint are cryptographically bound to this pod
+    configuration_failing if {
+        some _, submod in input.submods
+        configuration := submod["ear.trustworthiness-vector"]["configuration"]
+        not in_affirming_range(configuration)
+    }
+
+    # executables: cosign image signature verified against model owner's key
     executable_failing if {
         some _, submod in input.submods
         executables := submod["ear.trustworthiness-vector"]["executables"]
@@ -785,7 +828,7 @@ data:
 EOF
 ```
 
-Create the resource policy ConfigMap — this is the second gate after attestation, restricting resource access to clients whose token shows affirming executables:
+Create the resource policy ConfigMap — this is the second gate after attestation, restricting resource access to clients whose token shows affirming hardware, configuration, and executables claims:
 
 ```bash
 oc apply -f - <<'EOF'
@@ -803,6 +846,12 @@ data:
 
     allow if {
         some _, submod in input.submods
+        hardware := submod["ear.trustworthiness-vector"]["hardware"]
+        hardware >= 2
+        hardware <= 31
+        configuration := submod["ear.trustworthiness-vector"]["configuration"]
+        configuration >= 2
+        configuration <= 31
         executables := submod["ear.trustworthiness-vector"]["executables"]
         executables >= 2
         executables <= 31
@@ -836,30 +885,32 @@ EOF
 
 The KBS has no web UI for secret registration. These three `curl` commands register the model key, cosign public key, and image verification policy directly against the KBS REST API. Get the KBS route hostname from Step 6, then run from a terminal with `MODEL_ENCRYPTION_KEY` set and `cosign.pub` present:
 
+KBS uses a self-signed TLS certificate. The `-k` flag skips cert verification for these one-time admin registration calls — KBS authentication is enforced by the `kbs-auth-public-key` Ed25519 key, not by TLS cert trust.
+
 ```bash
 KBS_ROUTE=$(oc get route kbs-route -n trustee-operator-system -o jsonpath='{.spec.host}')
 NAMESPACE=<your deployment namespace, e.g. seismic-interpretation>
 
 # Model decryption key
-curl -fsSL -X PUT https://$KBS_ROUTE/kbs/v0/resource/$NAMESPACE/conf-seismic-model-key/key \
+curl -fsSLk -X PUT https://$KBS_ROUTE/kbs/v0/resource/$NAMESPACE/conf-seismic-model-key/key \
     --data-binary "$MODEL_ENCRYPTION_KEY"
 
 # Cosign public key
-curl -fsSL -X PUT https://$KBS_ROUTE/kbs/v0/resource/$NAMESPACE/conf-seismic-cosign-key/pub-key \
+curl -fsSLk -X PUT https://$KBS_ROUTE/kbs/v0/resource/$NAMESPACE/conf-seismic-cosign-key/pub-key \
     --data-binary @cosign.pub
 
 # Image verification policy
 APP_IMAGE_REPO=quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-deepseismic-app
 printf '{"default":[{"type":"reject"}],"transports":{"docker":{"%s":[{"type":"sigstoreSigned","keyPath":"kbs:///%s/conf-seismic-cosign-key/pub-key"}]}}}' \
     "$APP_IMAGE_REPO" "$NAMESPACE" \
-    | curl -fsSL -X PUT \
+    | curl -fsSLk -X PUT \
         https://$KBS_ROUTE/kbs/v0/resource/$NAMESPACE/conf-seismic-image-policy/policy \
         --data-binary @-
 ```
 
 Or equivalently: `make setup-attestation NAMESPACE=$NAMESPACE KBS_URL=https://$KBS_ROUTE`
 
-> `make setup-intel-tee` (or `make setup-amd-tee`) runs the hardware prerequisite kernel parameter step. `make setup-kata` runs Part 1 Steps 1–2. `make setup-trustee-in-cluster` runs Trustee setup Steps 1–6 automatically. `make setup-attestation` performs Trustee setup Step 7.
+> `make setup-intel-tee` (or `make setup-amd-tee`) runs the hardware prerequisite kernel parameter step. `make setup-kata` runs Part 1 Steps 1–2. `make setup-trustee-in-cluster` runs Trustee setup Steps 1–6 automatically (including Step 2a if `NRAS_API_KEY` is supplied). `make setup-attestation` performs Trustee setup Step 7.
 
 ---
 

@@ -12,6 +12,12 @@ data:
 
     allow if {
         some _, submod in input.submods
+        hardware := submod["ear.trustworthiness-vector"]["hardware"]
+        hardware >= 2
+        hardware <= 31
+        configuration := submod["ear.trustworthiness-vector"]["configuration"]
+        configuration >= 2
+        configuration <= 31
         executables := submod["ear.trustworthiness-vector"]["executables"]
         executables >= 2
         executables <= 31

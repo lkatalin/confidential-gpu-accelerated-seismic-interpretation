@@ -28,10 +28,11 @@ endif
 
 APP_IMG        ?= $(REGISTRY)/$(APP_QUAY_REPO):$(APP_TAG)
 COSIGN_KEY          ?= cosign.key
+NRAS_API_KEY        ?=
 RUNTIME_CLASS       ?= nvidia
 KATA_RUNTIME_CLASS  ?= kata-cc-nvidia-gpu
 APP_IMAGE_REPO       = $(shell echo $(APP_IMG) | cut -d: -f1)
-KBS_URL             ?= https://$(shell oc get route kbs-service \
+KBS_URL             ?= https://$(shell oc get route kbs-route \
                           -n trustee-operator-system \
                           -o jsonpath='{.spec.host}' 2>/dev/null)
 
@@ -124,6 +125,9 @@ help:
 	@echo "  KATA_RUNTIME_CLASS     - kata runtimeClass for install (default: kata-cc-nvidia-gpu)"
 	@echo "  KBS_URL                - KBS route URL for setup-attestation (default: auto-detected from cluster)"
 	@echo "  COSIGN_KEY             - Path to cosign private key (default: cosign.key)"
+	@echo "  NRAS_API_KEY           - NVIDIA NGC API key for NRAS GPU attestation (obtain from https://ngc.nvidia.com)"
+	@echo "                           Required for GPU CC attestation enforcement. Passed to setup-trustee-in-cluster"
+	@echo "                           to create the nras-api-key Secret in trustee-operator-system."
 	@echo "  N_SAMPLES              - Inline slices to extract as sample inputs (default: 15)"
 	@echo "  APP_QUAY_REPO          - App repository name (default: conf-gpu-accel-seismic-interp-deepseismic-app)"
 	@echo "  APP_TAG                - App image tag (auto: $(BASE_VERSION) on main, $(BASE_VERSION)-dev elsewhere)"
@@ -458,7 +462,7 @@ sign-app:
 install:
 	@[ -n "$$NAMESPACE" ] || (echo "Error: NAMESPACE is not set"; exit 1)
 	@set -e; \
-	KBS_ROUTE=$$(oc get route kbs-service -n trustee-operator-system \
+	KBS_ROUTE=$$(oc get route kbs-route -n trustee-operator-system \
 	    -o jsonpath='{.spec.host}' 2>/dev/null); \
 	[ -n "$$KBS_ROUTE" ] || { \
 	    echo "Error: KBS route not found — run make setup-trustee-in-cluster first"; exit 1; \
@@ -781,6 +785,25 @@ setup-trustee-in-cluster:
 	    bash scripts/apply-kbs-certs.sh; \
 	fi; \
 	\
+	echo "=== Step 1c: NRAS API key (required for GPU CC attestation) ==="; \
+	if [ -n "$(NRAS_API_KEY)" ]; then \
+	    if oc get secret nras-api-key -n trustee-operator-system \
+	            --ignore-not-found 2>/dev/null | grep -q .; then \
+	        echo "WARNING: nras-api-key Secret already exists, skipping."; \
+	    else \
+	        oc create secret generic nras-api-key \
+	            -n trustee-operator-system \
+	            --from-literal=apiKey="$(NRAS_API_KEY)"; \
+	        echo "nras-api-key Secret created."; \
+	    fi; \
+	else \
+	    echo "WARNING: NRAS_API_KEY not set — GPU CC attestation will not be verified."; \
+	    echo "         Obtain an NGC API key at https://ngc.nvidia.com, then re-run:"; \
+	    echo "           make setup-trustee-in-cluster NRAS_API_KEY=<your-ngc-api-key>"; \
+	    echo "         The attestation policy enforces GPU CC mode — pods will fail attestation"; \
+	    echo "         if the Trustee AS cannot contact NRAS to verify the GPU CC report."; \
+	fi; \
+	\
 	echo "=== Step 2: TrusteeConfig ==="; \
 	if oc get trusteeconfig -n trustee-operator-system \
 	        --ignore-not-found 2>/dev/null | grep -q .; then \
@@ -819,7 +842,7 @@ setup-trustee-in-cluster:
 	    oc rollout status deployment/trustee-deployment \
 	        -n trustee-operator-system --timeout=5m; \
 	fi; \
-	echo "KBS route: $$(oc get route kbs-service \
+	echo "KBS route: $$(oc get route kbs-route \
 	    -n trustee-operator-system -o jsonpath='{.spec.host}')"; \
 	echo "=== setup-trustee-in-cluster complete ==="
 
@@ -829,14 +852,16 @@ setup-attestation:
 	@[ -n "$$MODEL_ENCRYPTION_KEY" ] || (echo "Error: MODEL_ENCRYPTION_KEY is not set"; exit 1)
 	@[ -f cosign.pub ] || (echo "Error: cosign.pub not found — run 'make generate-keys' first"; exit 1)
 	@echo "Registering model key at kbs:///$(NAMESPACE)/conf-seismic-model-key/key..."
-	@curl -fsSL -X PUT $(KBS_URL)/kbs/v0/resource/$(NAMESPACE)/conf-seismic-model-key/key \
+	@# KBS uses a self-signed TLS cert — -k skips cert verification for this admin setup step.
+	@# KBS authentication is enforced by the kbs-auth-public-key, not by TLS cert trust.
+	@curl -fsSLk -X PUT $(KBS_URL)/kbs/v0/resource/$(NAMESPACE)/conf-seismic-model-key/key \
 	    --data-binary "$(MODEL_ENCRYPTION_KEY)"
 	@echo "Registering cosign public key at kbs:///$(NAMESPACE)/conf-seismic-cosign-key/pub-key..."
-	@curl -fsSL -X PUT $(KBS_URL)/kbs/v0/resource/$(NAMESPACE)/conf-seismic-cosign-key/pub-key \
+	@curl -fsSLk -X PUT $(KBS_URL)/kbs/v0/resource/$(NAMESPACE)/conf-seismic-cosign-key/pub-key \
 	    --data-binary @cosign.pub
 	@echo "Registering image verification policy at kbs:///$(NAMESPACE)/conf-seismic-image-policy/policy..."
 	@printf '{"default":[{"type":"reject"}],"transports":{"docker":{"%s":[{"type":"sigstoreSigned","keyPath":"kbs:///%s/conf-seismic-cosign-key/pub-key"}]}}}' \
 	    "$(APP_IMAGE_REPO)" "$(NAMESPACE)" \
-	    | curl -fsSL -X PUT $(KBS_URL)/kbs/v0/resource/$(NAMESPACE)/conf-seismic-image-policy/policy \
+	    | curl -fsSLk -X PUT $(KBS_URL)/kbs/v0/resource/$(NAMESPACE)/conf-seismic-image-policy/policy \
 	        --data-binary @-
 	@echo "Attestation secrets registered for namespace $(NAMESPACE)."
