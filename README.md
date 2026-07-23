@@ -760,59 +760,9 @@ The Trustee operator creates a passthrough TLS Route named `kbs-route` automatic
 oc get route kbs-route -n trustee-operator-system -o jsonpath='{.spec.host}'
 ```
 
-#### Step 6: Configure the attestation policy
+#### Step 6: Configure RVPS and resource policy
 
 The Trustee operator created a KbsConfig named `trusteeconfig-kbs-config` when it processed the TrusteeConfig above. Apply the ConfigMaps first, then update KbsConfig to reference them.
-
-Create the attestation policy ConfigMap:
-
-```bash
-oc apply -f - <<'EOF'
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: conf-seismic-attestation-policy
-  namespace: trustee-operator-system
-data:
-  policy.rego: |
-    package policy
-    import rego.v1
-
-    default allow = false
-
-    allow if {
-        count(input.submods) > 0
-        not hardware_failing
-        not configuration_failing
-        not executable_failing
-    }
-
-    # hardware: CPU TEE hardware quote verified (Intel TDX or AMD SEV-SNP)
-    # and NVIDIA GPU CC report verified via NRAS
-    hardware_failing if {
-        some _, submod in input.submods
-        hardware := submod["ear.trustworthiness-vector"]["hardware"]
-        not in_affirming_range(hardware)
-    }
-
-    # configuration: initdata hash binding verified — ensures the exec-deny
-    # policy and KBS endpoint are cryptographically bound to this pod
-    configuration_failing if {
-        some _, submod in input.submods
-        configuration := submod["ear.trustworthiness-vector"]["configuration"]
-        not in_affirming_range(configuration)
-    }
-
-    # executables: cosign image signature verified against model owner's key
-    executable_failing if {
-        some _, submod in input.submods
-        executables := submod["ear.trustworthiness-vector"]["executables"]
-        not in_affirming_range(executables)
-    }
-
-    in_affirming_range(val) if { val >= 2; val <= 31 }
-EOF
-```
 
 Create the RVPS reference values ConfigMap:
 
@@ -859,7 +809,7 @@ data:
 EOF
 ```
 
-Update the KbsConfig to reference all three ConfigMaps:
+Update the KbsConfig to reference both ConfigMaps:
 
 ```bash
 oc apply -f - <<'EOF'
@@ -874,7 +824,6 @@ spec:
   kbsHttpsKeySecretName: trustee-tls-cert
   kbsHttpsCertSecretName: trustee-tls-cert
   kbsAuthSecretName: kbs-auth-public-key
-  kbsAttestationPolicyConfigMapName: conf-seismic-attestation-policy
   kbsRvpsRefValuesConfigMapName: conf-seismic-rvps-reference-values
   kbsResourcePolicyConfigMapName: conf-seismic-resource-policy
 EOF
