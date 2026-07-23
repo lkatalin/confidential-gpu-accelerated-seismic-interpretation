@@ -814,13 +814,7 @@ setup-trustee-in-cluster:
 	        -n trustee-operator-system --timeout=5m; \
 	fi; \
 	\
-	echo "=== Step 3: Attestation policy ConfigMaps and KbsConfig ==="; \
-	if oc get configmap conf-seismic-attestation-policy \
-	        -n trustee-operator-system --ignore-not-found 2>/dev/null | grep -q .; then \
-	    echo "WARNING: Attestation policy ConfigMap already exists, skipping."; \
-	else \
-	    oc apply -f helm/trustee/templates/attestation-policy-configmap.yaml; \
-	fi; \
+	echo "=== Step 3: Policy ConfigMaps and KbsConfig ==="; \
 	if oc get configmap conf-seismic-rvps-reference-values \
 	        -n trustee-operator-system --ignore-not-found 2>/dev/null | grep -q .; then \
 	    echo "WARNING: RVPS reference values ConfigMap already exists, skipping."; \
@@ -834,9 +828,9 @@ setup-trustee-in-cluster:
 	    oc apply -f helm/trustee/templates/resource-policy-configmap.yaml; \
 	fi; \
 	if oc get kbsconfig trusteeconfig-kbs-config -n trustee-operator-system \
-	        -o jsonpath='{.spec.kbsAttestationPolicyConfigMapName}' 2>/dev/null \
+	        -o jsonpath='{.spec.kbsResourcePolicyConfigMapName}' 2>/dev/null \
 	        | grep -q "conf-seismic"; then \
-	    echo "WARNING: KbsConfig already references conf-seismic policy, skipping."; \
+	    echo "WARNING: KbsConfig already references conf-seismic policies, skipping."; \
 	else \
 	    oc apply -f helm/trustee/templates/kbs-config.yaml; \
 	    oc rollout status deployment/trustee-deployment \

@@ -13,6 +13,5 @@ spec:
   kbsHttpsKeySecretName: trustee-tls-cert
   kbsHttpsCertSecretName: trustee-tls-cert
   kbsAuthSecretName: kbs-auth-public-key
-  kbsAttestationPolicyConfigMapName: conf-seismic-attestation-policy
   kbsRvpsRefValuesConfigMapName: conf-seismic-rvps-reference-values
   kbsResourcePolicyConfigMapName: conf-seismic-resource-policy

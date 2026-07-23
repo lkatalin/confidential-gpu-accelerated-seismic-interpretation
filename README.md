@@ -92,23 +92,22 @@ One attack surface that hardware and policy controls cannot eliminate is the beh
 
 ```mermaid
 flowchart TB
-    classDef untrusted fill:#f5f5f5,stroke:#999,color:#333
-    classDef tee fill:#e8f5e9,stroke:#388e3c,color:#1b5e20
-    classDef trusted fill:#e3f2fd,stroke:#1565c0,color:#0d47a1
-    classDef external fill:#212121,stroke:#212121,color:#fff
-    classDef blocked fill:#ffebee,stroke:#c62828,color:#b71c1c
+    classDef default fill:#F0F0F0,stroke:#EE0000,stroke-width:2px,color:#151515
+    classDef rhRed fill:#EE0000,stroke:#C90000,stroke-width:2px,color:#FFFFFF
+    classDef rhBlack fill:#151515,stroke:#000000,stroke-width:2px,color:#FFFFFF
+    classDef rhOutline fill:#FFFFFF,stroke:#151515,stroke-width:2px,color:#151515
 
     subgraph UC["Untrusted OpenShift Cluster"]
         direction TB
-        Host["Host OS / Hypervisor\ncluster operator controls this layer"]:::untrusted
-        ExecAttempt["oc exec / terminal attempt\nby cluster admin or user"]:::blocked
+        Host["Host OS / Hypervisor\ncluster operator controls this layer"]:::default
+        ExecAttempt["oc exec / terminal attempt\nby cluster admin or user"]:::rhRed
         subgraph TEE["Hardware Trust Domain · TDX or SEV-SNP\nmemory encrypted by CPU — host cannot read or write"]
             direction TB
-            CPU["CPU Hardware · Intel TDX or AMD SEV-SNP\ngenerates hardware-signed TEE quote\nmeasures guest kernel · initdata · VM config\ncannot be forged — signed by hardware key"]:::tee
-            KataAgent["Kata Agent\nexec-deny policy embedded in initdata\nblocks all exec and terminal requests"]:::tee
-            AA["Attestation Agent\ncollects TEE quote from CPU hardware\ncollects CC report from GPU hardware\nforwards evidence bundle + initdata hash"]:::tee
-            App["Application Container\ncosign-signed image"]:::tee
-            GPU["NVIDIA GPU · CC mode\ngenerates hardware-signed CC report\nverified by NVIDIA NRAS\nGPU memory encrypted"]:::tee
+            CPU["CPU Hardware · Intel TDX or AMD SEV-SNP\ngenerates hardware-signed TEE quote\nmeasures guest kernel · initdata · VM config\ncannot be forged — signed by hardware key"]:::rhOutline
+            KataAgent["Kata Agent\nexec-deny policy embedded in initdata\nblocks all exec and terminal requests"]:::rhOutline
+            AA["Attestation Agent\ncollects TEE quote from CPU hardware\ncollects CC report from GPU hardware\nforwards evidence bundle + initdata hash"]:::rhOutline
+            App["Application Container\ncosign-signed image"]:::rhOutline
+            GPU["NVIDIA GPU · CC mode\ngenerates hardware-signed CC report\nverified by NVIDIA NRAS\nGPU memory encrypted"]:::rhOutline
             CPU -- "TEE quote\nhardware-signed" --> AA
             GPU -- "CC report\nhardware-signed" --> AA
         end
@@ -117,16 +116,20 @@ flowchart TB
     end
 
     subgraph KC["Trusted KBS Cluster"]
-        KBS["Trustee / KBS\nverifies evidence independently\nof the workload cluster"]:::trusted
+        KBS["Trustee / KBS\nverifies evidence independently\nof the workload cluster"]:::rhRed
     end
 
-    Intel["Intel PCS (TDX)\nAMD KDS (SEV-SNP)\nNVIDIA NRAS · NVIDIA RIM\nCosign public key"]:::external
+    Intel["Intel PCS (TDX)\nAMD KDS (SEV-SNP)\nNVIDIA NRAS · NVIDIA RIM\nCosign public key"]:::rhBlack
 
     AA -- "① evidence bundle\nCPU TEE quote (hardware-signed)\nGPU CC report (hardware-signed)\n+ image digest + cosign sig\n+ initdata hash" --> KBS
     KBS -- "② verify against\nvendor services" --> Intel
     KBS -- "③ hardware · configuration · executables\nall affirming — key released" --> AA
     AA -- "④ key delivered\ninside encrypted memory" --> App
     App -- "⑤ model decrypted\ninside TEE only" --> GPU
+
+    style UC fill:#ffffff,stroke:#151515,stroke-width:2px,stroke-dasharray: 5 5
+    style TEE fill:#fdf4f4,stroke:#EE0000,stroke-width:2px
+    style KC fill:#f9f9f9,stroke:#151515,stroke-width:1px
 ```
 
 ### What this quickstart provides
