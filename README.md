@@ -554,8 +554,11 @@ Verify NFD has labeled the node with the TEE platform:
 
 ```bash
 oc get node <node-name> --show-labels | tr ',' '\n' | grep -E "tdx|snp"
-# Expected: intel.feature.node.kubernetes.io/tdx= (Intel)
-#        or amd.feature.node.kubernetes.io/snp=   (AMD)
+# Expected (Intel TDX): both of these labels should be present:
+#   feature.node.kubernetes.io/cpu-security.tdx.enabled=true  (NFD built-in detector)
+#   intel.feature.node.kubernetes.io/tdx=true                 (NodeFeatureRule label used by OSC)
+# Expected (AMD SEV-SNP):
+#   amd.feature.node.kubernetes.io/snp=true
 ```
 
 If the label is not present, the BIOS settings are not correctly saved — revisit the hardware prerequisite section.
@@ -666,7 +669,7 @@ Or follow the manual steps below.
 - Logged in as cluster-admin
 - `kata-cc` runtimeClass available (Kata containers setup above complete)
 - cert-manager installed (`openshift-cert-manager-operator` namespace)
-- NVIDIA NGC API key for NRAS — required for GPU CC attestation verification. Obtain one at [ngc.nvidia.com](https://ngc.nvidia.com) (free account). Without this, the Trustee AS cannot contact NRAS to verify the GPU CC report, and attestation will fail the `hardware` check.
+- NVIDIA NGC Service Account Key (SAK) for NRAS — required for GPU CC attestation verification. A standard personal API key will not work; NRAS requires a SAK configured specifically for the NVIDIA Attestation service (see Step 2a below). Without this, the Trustee AS cannot contact NRAS to verify the GPU CC report, and attestation will fail the `hardware` check.
 
 #### Step 1: Install the Trustee operator
 
@@ -698,9 +701,16 @@ The private key is discarded immediately — KBS only needs the public key to ve
 
 #### Step 2a: Create the NRAS API key Secret
 
-The Trustee Attestation Service contacts NVIDIA NRAS (`nras.attestation.nvidia.com`) to verify GPU CC reports. NRAS requires authentication with an NGC API key.
+The Trustee Attestation Service contacts NVIDIA NRAS (`nras.attestation.nvidia.com`) to verify GPU CC reports. NRAS requires a **Service Account Key (SAK)** — a standard personal NGC API key will not authenticate with NRAS.
 
-Obtain a free NGC API key at [ngc.nvidia.com](https://ngc.nvidia.com) (create an account, then go to **Account → Setup → Generate API Key**). Then create the Secret:
+To create the SAK at [ngc.nvidia.com](https://ngc.nvidia.com):
+
+1. Account dropdown → **Organization**
+2. Left nav → **Service Keys** → **Create Service Key**
+3. Set **Service** to `NVIDIA Attestation`, **Scope** to `All Scopes`, **Entity Type** to `All Entity`
+4. Copy the key immediately — it is shown only once
+
+Then create the Secret:
 
 ```bash
 oc create secret generic nras-api-key \

@@ -125,9 +125,11 @@ help:
 	@echo "  KATA_RUNTIME_CLASS     - kata runtimeClass for install (default: kata-cc-nvidia-gpu)"
 	@echo "  KBS_URL                - KBS route URL for setup-attestation (default: auto-detected from cluster)"
 	@echo "  COSIGN_KEY             - Path to cosign private key (default: cosign.key)"
-	@echo "  NRAS_API_KEY           - NVIDIA NGC API key for NRAS GPU attestation (obtain from https://ngc.nvidia.com)"
-	@echo "                           Required for GPU CC attestation enforcement. Passed to setup-trustee-in-cluster"
-	@echo "                           to create the nras-api-key Secret in trustee-operator-system."
+	@echo "  NRAS_API_KEY           - NVIDIA NGC Service Account Key (SAK) for NRAS GPU attestation."
+	@echo "                           A standard personal API key will NOT work — create a SAK at ngc.nvidia.com:"
+	@echo "                           Organization -> Service Keys -> Create Service Key"
+	@echo "                           Service: NVIDIA Attestation, Scope: All Scopes, Entity Type: All Entity"
+	@echo "                           Passed to setup-trustee-in-cluster to create the nras-api-key Secret."
 	@echo "  N_SAMPLES              - Inline slices to extract as sample inputs (default: 15)"
 	@echo "  APP_QUAY_REPO          - App repository name (default: conf-gpu-accel-seismic-interp-deepseismic-app)"
 	@echo "  APP_TAG                - App image tag (auto: $(BASE_VERSION) on main, $(BASE_VERSION)-dev elsewhere)"
@@ -798,8 +800,11 @@ setup-trustee-in-cluster:
 	    fi; \
 	else \
 	    echo "WARNING: NRAS_API_KEY not set — GPU CC attestation will not be verified."; \
-	    echo "         Obtain an NGC API key at https://ngc.nvidia.com, then re-run:"; \
-	    echo "           make setup-trustee-in-cluster NRAS_API_KEY=<your-ngc-api-key>"; \
+	    echo "         Create an NGC Service Account Key (SAK) at https://ngc.nvidia.com:"; \
+	    echo "           Organization -> Service Keys -> Create Service Key"; \
+	    echo "           Service: NVIDIA Attestation, Scope: All Scopes, Entity Type: All Entity"; \
+	    echo "         A standard personal API key will NOT work. Then re-run:"; \
+	    echo "           make setup-trustee-in-cluster NRAS_API_KEY=<your-sak>"; \
 	    echo "         The attestation policy enforces GPU CC mode — pods will fail attestation"; \
 	    echo "         if the Trustee AS cannot contact NRAS to verify the GPU CC report."; \
 	fi; \
