@@ -2,26 +2,36 @@
 """
 Build the cc_init_data blob for the kata VM.
 
-Usage: build-initdata.py <KBS_URL> <NAMESPACE>
+Usage: build-initdata.py <KBS_URL> <NAMESPACE> [--pcr8-only]
   Reads the KBS TLS certificate PEM from stdin.
-  Prints the gzip+base64-encoded initdata TOML to stdout.
+  Default: prints the gzip+base64-encoded initdata TOML to stdout.
+  --pcr8-only: prints the tdx_pcr08 hex value to stdout instead.
 
 The initdata TOML contains three keys (aa.toml, cdh.toml, policy.rego).
 Its SHA-256 hash is included in the TEE attestation report when hardware TEE
 is present, binding the pod's KBS endpoint and image policy to the hardware
 measurement.  On the dev cluster (no TEE) the hash is computed but not bound
 to hardware; the binding activates when the pod moves to the bare metal cluster.
+
+tdx_pcr08 is the vTPM PCR8 value after extending the initdata hash:
+  SHA256(zeroes_32 || SHA256(initdata_toml_bytes))
+Registering this in RVPS prevents the cluster admin from modifying the initdata
+(KBS URL, image policy URI, namespace) without failing the configuration check.
 """
 import base64
 import gzip
+import hashlib
 import sys
 
-if len(sys.argv) != 3:
-    print(f"Usage: {sys.argv[0]} <KBS_URL> <NAMESPACE>", file=sys.stderr)
+pcr8_only = "--pcr8-only" in sys.argv
+args = [a for a in sys.argv[1:] if not a.startswith("--")]
+
+if len(args) != 2:
+    print(f"Usage: {sys.argv[0]} <KBS_URL> <NAMESPACE> [--pcr8-only]", file=sys.stderr)
     sys.exit(1)
 
-kbs_url = sys.argv[1]
-namespace = sys.argv[2]
+kbs_url = args[0]
+namespace = args[1]
 kbs_cert = sys.stdin.read().strip()
 
 aa_toml = f"""\
@@ -111,4 +121,12 @@ version = "0.1.0"
 '''
 """
 
-print(base64.b64encode(gzip.compress(toml.encode())).decode(), end="")
+toml_bytes = toml.encode()
+
+if pcr8_only:
+    pcr = bytes(32)
+    toml_hash = hashlib.sha256(toml_bytes).digest()
+    pcr8 = hashlib.sha256(pcr + toml_hash).hexdigest()
+    print(pcr8, end="")
+else:
+    print(base64.b64encode(gzip.compress(toml_bytes)).decode(), end="")

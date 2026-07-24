@@ -27,12 +27,12 @@ ifeq ($(origin APP_TAG),undefined)
 endif
 
 APP_IMG        ?= $(REGISTRY)/$(APP_QUAY_REPO):$(APP_TAG)
-MODELCAR_COSIGN_KEY ?= app-container-verification-keys/cosign.key
 MODEL_OWNER_COSIGN_KEY ?= model-owner-verification-keys/cosign.key
 NRAS_API_KEY        ?=
 RUNTIME_CLASS       ?= nvidia
 KATA_RUNTIME_CLASS  ?= kata-cc-nvidia-gpu
 APP_IMAGE_REPO       = $(shell echo $(APP_IMG) | cut -d: -f1)
+MODEL_IMAGE_REPO     = $(shell echo $(MODEL_IMG) | cut -d: -f1)
 KBS_URL             ?= https://$(shell oc get route kbs-route \
                           -n trustee-operator-system \
                           -o jsonpath='{.spec.host}' 2>/dev/null)
@@ -97,7 +97,8 @@ help:
 	@echo "                               Requires setup-intel-tee or setup-amd-tee to have completed first"
 	@echo "    setup-trustee-in-cluster - Install Trustee KBS operator and configure attestation policy"
 	@echo "                               Requires setup-kata to have completed first (kata-cc must exist)"
-	@echo "    setup-attestation        - Register model key, cosign key, and image policy with KBS"
+	@echo "    setup-attestation        - Register model key, cosign key, and image policy with KBS;"
+	@echo "                               compute and register tdx_pcr08 RVPS reference value"
 	@echo "                               (requires NAMESPACE, MODEL_ENCRYPTION_KEY, model-owner-verification-keys/cosign.pub)"
 	@echo ""
 	@echo "  Deploy:"
@@ -105,11 +106,10 @@ help:
 	@echo "                       fetches KBS cert from cluster and builds initdata blob automatically)"
 	@echo "    uninstall        - Uninstall the app from the cluster"
 	@echo ""
-	@echo "  Signing:"
-	@echo "    generate-keys                     - Generate a cosign key pair in app-container-verification-keys/ (quickstart default)"
-	@echo "    generate-model-owner-keys         - Generate a cosign key pair in model-owner-verification-keys/ (custom model owner)"
-	@echo "    sign-modelcar                     - Sign the pushed ModelCar image with cosign"
-	@echo "    model-owner-sign-app-container    - Sign the pushed application image with cosign"
+	@echo "  Signing (model owner — run when publishing a custom model or app image):"
+	@echo "    generate-model-owner-keys         - Generate a cosign key pair in model-owner-verification-keys/"
+	@echo "    sign-modelcar                     - Sign the pushed ModelCar image with the model owner key"
+	@echo "    model-owner-sign-app-container    - Sign the pushed application image with the model owner key"
 	@echo ""
 	@echo "Configuration (set via environment variables or make arguments):"
 	@echo ""
@@ -126,7 +126,6 @@ help:
 	@echo "  MODEL_ENCRYPTION_KEY   - AES-256-CBC key (required for build-modelcar and setup-attestation)"
 	@echo "  KATA_RUNTIME_CLASS     - kata runtimeClass for install (default: kata-cc-nvidia-gpu)"
 	@echo "  KBS_URL                - KBS route URL for setup-attestation (default: auto-detected from cluster)"
-	@echo "  MODELCAR_COSIGN_KEY    - Path to ModelCar signing key (default: app-container-verification-keys/cosign.key)"
 	@echo "  MODEL_OWNER_COSIGN_KEY - Path to model owner signing key (default: model-owner-verification-keys/cosign.key)"
 	@echo "  NRAS_API_KEY           - NVIDIA NGC personal API key for NRAS GPU attestation."
 	@echo "                           Create at ngc.nvidia.com: click your name -> Account Settings -> Generate API Key"
@@ -435,12 +434,6 @@ run-inference:
 	oc delete pod model-copy -n $(NAMESPACE)
 	@echo "Classification results saved to ./results/"
 
-.PHONY: generate-keys
-generate-keys:
-	mkdir -p app-container-verification-keys
-	cosign generate-key-pair --output-key-prefix app-container-verification-keys/cosign
-	@echo "app-container-verification-keys/cosign.key and cosign.pub generated — keep cosign.key private, never commit it"
-
 .PHONY: generate-model-owner-keys
 generate-model-owner-keys:
 	mkdir -p model-owner-verification-keys
@@ -449,8 +442,8 @@ generate-model-owner-keys:
 
 .PHONY: sign-modelcar
 sign-modelcar:
-	@[ -f "$(MODELCAR_COSIGN_KEY)" ] || (echo "Error: $(MODELCAR_COSIGN_KEY) not found — run 'make generate-keys' first"; exit 1)
-	cosign sign --key $(MODELCAR_COSIGN_KEY) $(MODEL_IMG)
+	@[ -f "$(MODEL_OWNER_COSIGN_KEY)" ] || (echo "Error: $(MODEL_OWNER_COSIGN_KEY) not found — run 'make generate-model-owner-keys' first"; exit 1)
+	cosign sign --key $(MODEL_OWNER_COSIGN_KEY) $(MODEL_IMG)
 	@echo "Successfully signed $(MODEL_IMG)"
 
 .PHONY: build-app
@@ -868,8 +861,21 @@ setup-attestation:
 	@curl -fsSLk -X PUT $(KBS_URL)/kbs/v0/resource/$(NAMESPACE)/conf-seismic-cosign-key/pub-key \
 	    --data-binary @model-owner-verification-keys/cosign.pub
 	@echo "Registering image verification policy at kbs:///$(NAMESPACE)/conf-seismic-image-policy/policy..."
-	@printf '{"default":[{"type":"reject"}],"transports":{"docker":{"%s":[{"type":"sigstoreSigned","keyPath":"kbs:///%s/conf-seismic-cosign-key/pub-key"}]}}}' \
-	    "$(APP_IMAGE_REPO)" "$(NAMESPACE)" \
+	@printf '{"default":[{"type":"reject"}],"transports":{"docker":{"%s":[{"type":"sigstoreSigned","keyPath":"kbs:///%s/conf-seismic-cosign-key/pub-key"}],"%s":[{"type":"sigstoreSigned","keyPath":"kbs:///%s/conf-seismic-cosign-key/pub-key"}]}}}' \
+	    "$(APP_IMAGE_REPO)" "$(NAMESPACE)" "$(MODEL_IMAGE_REPO)" "$(NAMESPACE)" \
 	    | curl -fsSLk -X PUT $(KBS_URL)/kbs/v0/resource/$(NAMESPACE)/conf-seismic-image-policy/policy \
 	        --data-binary @-
-	@echo "Attestation secrets registered for namespace $(NAMESPACE)."
+	@echo "Computing tdx_pcr08 (initdata configuration binding)..."
+	@set -e; \
+	KBS_CERT=$$(oc get secret trustee-tls-cert -n trustee-operator-system \
+	    -o jsonpath='{.data.tls\.crt}' | base64 -d); \
+	PCR8=$$(echo "$$KBS_CERT" | python3 scripts/build-initdata.py "$(KBS_URL)" "$(NAMESPACE)" --pcr8-only); \
+	echo "tdx_pcr08: $$PCR8"; \
+	REF_JSON=$$(python3 -c "import json,sys; print(json.dumps([{'name':'tdx_pcr08','value':[sys.argv[1]]}]))" "$$PCR8"); \
+	oc patch configmap conf-seismic-rvps-reference-values \
+	    -n trustee-operator-system \
+	    --type merge \
+	    -p "{\"data\":{\"reference-values.json\":$$REF_JSON}}"; \
+	oc rollout restart deployment/trustee-deployment -n trustee-operator-system; \
+	oc rollout status deployment/trustee-deployment -n trustee-operator-system --timeout=2m
+	@echo "Attestation secrets and RVPS reference values registered for namespace $(NAMESPACE)."

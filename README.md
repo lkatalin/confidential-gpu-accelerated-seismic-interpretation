@@ -19,10 +19,11 @@ AI-powered classification from North Sea seismic data — running with a three-f
 - [Deploy](#deploy)
   - [Clone the repository](#clone-the-repository)
   - [Hardware prerequisite: Enable TEE in server firmware and kernel parameters](#hardware-prerequisite-enable-tee-in-server-firmware-and-kernel-parameters)
-  - [Kata containers setup (cluster-admin, once per cluster)](#kata-containers-setup-cluster-admin-once-per-cluster)
+  - [Roles](#roles)
+  - [Kata containers setup — application deployer (cluster-admin, once per cluster)](#kata-containers-setup--application-deployer-cluster-admin-once-per-cluster)
     - [Step 1: Install Node Feature Discovery](#step-1-install-node-feature-discovery)
     - [Step 2: Install OpenShift Sandboxed Containers](#step-2-install-openshift-sandboxed-containers)
-  - [Trustee setup (cluster-admin, once per cluster)](#trustee-setup-cluster-admin-once-per-cluster)
+  - [Trustee setup — model owner (cluster-admin, once per cluster)](#trustee-setup--model-owner-cluster-admin-once-per-cluster)
     - [Step 1: Install the Trustee operator](#step-1-install-the-trustee-operator)
     - [Step 2: Create the kbs-auth-public-key Secret](#step-2-create-the-kbs-auth-public-key-secret)
     - [Step 3: Create the cert-manager Issuer and TLS Certificates](#step-3-create-the-cert-manager-issuer-and-tls-certificates)
@@ -30,7 +31,7 @@ AI-powered classification from North Sea seismic data — running with a three-f
     - [Step 5: Verify the KBS route](#step-5-verify-the-kbs-route)
     - [Step 6: Configure the attestation policy](#step-6-configure-the-attestation-policy)
     - [Step 7: Register app-specific secrets with KBS](#step-7-register-app-specific-secrets-with-kbs)
-  - [Application deployment (namespace admin)](#application-deployment-namespace-admin)
+  - [Application deployment — application deployer (namespace admin)](#application-deployment--application-deployer-namespace-admin)
     - [Step 1: Create the project](#step-1-create-the-project)
     - [Step 2: Deploy the application](#step-2-deploy-the-application)
     - [Step 3: Get the application URL](#step-3-get-the-application-url)
@@ -39,7 +40,8 @@ AI-powered classification from North Sea seismic data — running with a three-f
     - [Run classification](#run-classification)
     - [View results](#view-results)
   - [Verify confidential execution (Optional)](#verify-confidential-execution-optional)
-  - [Optional: Encrypt and publish your own model](#optional-encrypt-and-publish-your-own-model)
+  - [Optional: Encrypt and publish your own model — model owner](#optional-encrypt-and-publish-your-own-model--model-owner)
+  - [Optional: Build and publish your own application — model owner](#optional-build-and-publish-your-own-application--model-owner)
   - [What you've accomplished](#what-youve-accomplished)
   - [Delete](#delete)
 - [Tags](#tags)
@@ -292,6 +294,16 @@ This quickstart separates one-time platform setup (done by a platform team) from
 
 ## Deploy
 
+### Roles
+
+This quickstart involves two distinct parties. Each section is labeled with which role performs it.
+
+**Model owner** — owns the model weights and decides which application code is permitted to decrypt them. Generates signing keys, encrypts and signs the model and application images, operates Trustee/KBS, and registers secrets with KBS. The model decryption key never leaves Trustee — it is released only after attestation passes. The model owner never shares the key with the application deployer.
+
+**Application deployer** — operates the OpenShift cluster where the application runs. Installs kata confidential containers infrastructure, deploys the application, and uses it. Has no access to the model decryption key or to Trustee administration.
+
+> **Quickstart simplification:** In this quickstart both roles are performed by one person and Trustee runs on the same cluster as the application for demo convenience. In production, Trustee would run on infrastructure controlled by the model owner, separate from the application cluster. Steps 1–6 of Trustee setup would be performed by whoever operates that infrastructure; Step 7 and both Optional sections are always model owner responsibilities.
+
 ### Clone the repository
 
 ```bash
@@ -439,7 +451,7 @@ make check-prereqs
 
 ---
 
-### Kata containers setup (cluster-admin, once per cluster)
+### Kata containers setup — application deployer (cluster-admin, once per cluster)
 
 Kata Containers is an open-source container runtime that runs each pod inside a lightweight virtual machine rather than sharing the host kernel. Unlike standard containers — which rely on Linux namespaces and cgroups for isolation — a kata container gets its own dedicated VM kernel, meaning a compromised workload cannot affect the host OS or other pods. In this quickstart, the `kata-cc` runtime variant goes further: it runs the VM inside a hardware Trust Domain (Intel® TDX or AMD SEV-SNP), so the pod's memory is encrypted and inaccessible even to the hypervisor or cluster administrator. The `kata-cc-nvidia-gpu` runtime extends this with GPU passthrough, giving the workload direct, encrypted access to the NVIDIA GPU without exposing data outside the Trust Domain.
 
@@ -656,7 +668,9 @@ oc get runtimeclass | grep kata
 
 ---
 
-### Trustee setup (cluster-admin, once per cluster)
+### Trustee setup — model owner (cluster-admin, once per cluster)
+
+> **In this quickstart** the application deployer also runs Trustee setup for demo convenience. In production this section is performed by the model owner on independently controlled infrastructure. Step 7 is always a model owner responsibility regardless of deployment topology.
 
 To perform automatically (after Part 1 is complete):
 
@@ -889,13 +903,30 @@ curl -fsSLk -X PUT https://$KBS_ROUTE/kbs/v0/resource/$NAMESPACE/conf-seismic-mo
 curl -fsSLk -X PUT https://$KBS_ROUTE/kbs/v0/resource/$NAMESPACE/conf-seismic-cosign-key/pub-key \
     --data-binary @model-owner-verification-keys/cosign.pub
 
-# Image verification policy
+# Image verification policy — both the app and ModelCar images must be signed by the model owner key.
+# The default "reject" ensures no unsigned image can run inside the TEE.
 APP_IMAGE_REPO=quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-deepseismic-app
-printf '{"default":[{"type":"reject"}],"transports":{"docker":{"%s":[{"type":"sigstoreSigned","keyPath":"kbs:///%s/conf-seismic-cosign-key/pub-key"}]}}}' \
-    "$APP_IMAGE_REPO" "$NAMESPACE" \
+MODEL_IMAGE_REPO=quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-deepseismic-model
+printf '{"default":[{"type":"reject"}],"transports":{"docker":{"%s":[{"type":"sigstoreSigned","keyPath":"kbs:///%s/conf-seismic-cosign-key/pub-key"}],"%s":[{"type":"sigstoreSigned","keyPath":"kbs:///%s/conf-seismic-cosign-key/pub-key"}]}}}' \
+    "$APP_IMAGE_REPO" "$NAMESPACE" "$MODEL_IMAGE_REPO" "$NAMESPACE" \
     | curl -fsSLk -X PUT \
         https://$KBS_ROUTE/kbs/v0/resource/$NAMESPACE/conf-seismic-image-policy/policy \
         --data-binary @-
+
+# RVPS initdata binding — registers the expected tdx_pcr08 value so the
+# cluster admin cannot modify initdata (KBS URL, image policy URI, namespace)
+# without failing the configuration attestation check.
+KBS_CERT=$(oc get secret trustee-tls-cert -n trustee-operator-system \
+    -o jsonpath='{.data.tls\.crt}' | base64 -d)
+PCR8=$(echo "$KBS_CERT" | python3 scripts/build-initdata.py "https://$KBS_ROUTE" "$NAMESPACE" --pcr8-only)
+echo "tdx_pcr08: $PCR8"
+REF_JSON=$(python3 -c "import json,sys; print(json.dumps([{'name':'tdx_pcr08','value':[sys.argv[1]]}]))" "$PCR8")
+oc patch configmap conf-seismic-rvps-reference-values \
+    -n trustee-operator-system \
+    --type merge \
+    -p "{\"data\":{\"reference-values.json\":$REF_JSON}}"
+oc rollout restart deployment/trustee-deployment -n trustee-operator-system
+oc rollout status deployment/trustee-deployment -n trustee-operator-system --timeout=2m
 ```
 
 Or equivalently:
@@ -906,11 +937,11 @@ NAMESPACE=<your deployment namespace, e.g. seismic-interpretation>
 make setup-attestation NAMESPACE=$NAMESPACE KBS_URL=https://$KBS_ROUTE
 ```
 
-> `make setup-intel-tee` (or `make setup-amd-tee`) runs the hardware prerequisite kernel parameter step. `make setup-kata` runs Part 1 Steps 1–2. `make setup-trustee-in-cluster` runs Trustee setup Steps 1–6 automatically (including Step 2a if `NRAS_API_KEY` is supplied). `make setup-attestation` performs Trustee setup Step 7.
+> `make setup-intel-tee` (or `make setup-amd-tee`) runs the hardware prerequisite kernel parameter step. `make setup-kata` runs Part 1 Steps 1–2. `make setup-trustee-in-cluster` runs Trustee setup Steps 1–6 automatically (including Step 2a if `NRAS_API_KEY` is supplied). `make setup-attestation` performs all of Trustee setup Step 7: the three KBS `curl` registrations plus the RVPS `tdx_pcr08` ConfigMap update.
 
 ---
 
-### Application deployment (namespace admin)
+### Application deployment — application deployer (namespace admin)
 
 These steps require only `admin` access on the target namespace and `self-provisioner` to create projects. No cluster-admin access is needed after Trustee setup is complete.
 
@@ -1073,7 +1104,7 @@ Try the same through the OpenShift web console:
 
 This confirms that the Kata agent exec-deny policy prevents anyone — including cluster administrators — from injecting a shell or additional process into the running container. The only code that runs inside the Trust Domain is the cosign-signed app image that passed the KBS attestation check.
 
-### Optional: Encrypt and publish your own model
+### Optional: Encrypt and publish your own model — model owner
 
 The quickstart uses a pre-encrypted, pre-signed ModelCar image at `quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-model:v1`. This section shows how that image was produced, and how to publish your own — for example, after retraining on new data or to use a different quay.io namespace.
 
@@ -1098,7 +1129,7 @@ This produces two files in `model-owner-verification-keys/`:
 - `cosign.key` — your private signing key. **Keep this secret and never commit it.** (It is gitignored automatically.)
 - `cosign.pub` — the public key. This file is committed to the repository and registered with KBS in [Trustee setup Step 7](#step-7-register-app-specific-secrets-with-kbs) so KBS knows whose signature to trust.
 
-#### Step 2: Build and sign the ModelCar
+#### Step 2: Build, push, and sign the ModelCar
 
 ```bash
 # Encrypt weights and produce the ModelCar OCI image
@@ -1107,7 +1138,7 @@ make build-modelcar MODEL_ENCRYPTION_KEY=$MODEL_ENCRYPTION_KEY
 # Push to quay.io
 make push-modelcar
 
-# Sign the pushed image
+# Sign the pushed image with the model owner key
 make sign-modelcar
 ```
 
@@ -1120,7 +1151,7 @@ Encrypts `dutchf3_unet_final.pth` with AES-256-CBC inside the container build (t
 Pushes the image to quay.io.
 
 **`make sign-modelcar`**
-Signs the pushed ModelCar image with your private key for supply chain integrity — proving the model artifact has not been tampered with between publication and use.
+Signs the pushed ModelCar image with your model owner private key for supply chain integrity — proving the model artifact has not been tampered with between publication and use. The same key is also used to sign the application image (see [Optional: Build and publish your own application](#optional-build-and-publish-your-own-application)), which is the signature that KBS verifies during attestation to decide whether to release the decryption key.
 
 #### After publishing
 
@@ -1132,6 +1163,70 @@ modelcar:
 ```
 
 Re-register `model-owner-verification-keys/cosign.pub` with KBS so the image verification policy uses your key — re-run the cosign public key `curl` command from [Trustee setup Step 7](#step-7-register-app-specific-secrets-with-kbs):
+
+```bash
+KBS_ROUTE=$(oc get route kbs-route -n trustee-operator-system -o jsonpath='{.spec.host}')
+NAMESPACE=<your deployment namespace>
+curl -fsSLk -X PUT https://$KBS_ROUTE/kbs/v0/resource/$NAMESPACE/conf-seismic-cosign-key/pub-key \
+    --data-binary @model-owner-verification-keys/cosign.pub
+```
+
+Then re-run the deploy steps from [Step 4](#step-4-deploy-the-application) onwards.
+
+---
+
+### Optional: Build and publish your own application — model owner
+
+The quickstart uses a pre-built, pre-signed application image at `quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-deepseismic-app:v1`. This section shows how to build and publish a custom version — for example, after modifying the inference logic, changing the web UI, or moving to a different quay.io namespace.
+
+This is not required to run the quickstart. The steps below are for model owners who want to publish a new application image.
+
+**Prerequisites:**
+- `podman` or `docker`
+- `podman login quay.io` authenticated to a namespace where you can push
+- `cosign` 2.0+
+- A model owner key pair in `model-owner-verification-keys/` — generate one with `make generate-model-owner-keys` if you have not already done so (see [Optional: Encrypt and publish your own model](#optional-encrypt-and-publish-your-own-model))
+
+**Why the model owner signs the application image**
+
+KBS enforces a three-factor attestation check before releasing the model decryption key. The third factor — executables — verifies that the pod is running an application image signed by the model owner's private key. This is the mechanism that binds the model decryption key to a specific, approved application: even if an attacker gains access to the encrypted model in the registry, they cannot decrypt it without running the cosign-signed app inside a genuine hardware TEE.
+
+Signing is done by the model owner (the party who controls the decryption key) because they are the one deciding which application code is trusted to handle their model.
+
+#### Step 1: Build the application image
+
+```bash
+make build-app
+```
+
+This builds the application container from `Containerfile.app`.
+
+#### Step 2: Push to quay.io
+
+```bash
+make push-app
+```
+
+Pushes the image to quay.io. The target registry and repository are controlled by `APP_QUAY_REPO` and `APP_TAG` (see `make help`).
+
+#### Step 3: Sign the pushed image
+
+```bash
+make model-owner-sign-app-container
+```
+
+Signs the pushed application image with the model owner private key (`model-owner-verification-keys/cosign.key`). The signature is stored as an OCI referrer in the registry alongside the image. KBS uses the corresponding public key (`model-owner-verification-keys/cosign.pub`, registered in [Trustee setup Step 7](#step-7-register-app-specific-secrets-with-kbs)) to verify the signature during attestation.
+
+#### After publishing
+
+Update `helm/values.yaml` to point to your new image:
+
+```yaml
+app:
+  image: quay.io/myorg/conf-gpu-accel-seismic-interp-deepseismic-app:v1
+```
+
+If you also generated a new key pair, re-register the public key with KBS — re-run the cosign public key `curl` command from [Trustee setup Step 7](#step-7-register-app-specific-secrets-with-kbs):
 
 ```bash
 KBS_ROUTE=$(oc get route kbs-route -n trustee-operator-system -o jsonpath='{.spec.host}')

@@ -4,4 +4,14 @@ metadata:
   name: conf-seismic-rvps-reference-values
   namespace: trustee-operator-system
 data:
+  # Populated by make setup-attestation with the tdx_pcr08 value computed from
+  # the initdata TOML (SHA256(zeroes_32 || SHA256(initdata_toml_bytes))).
+  # This binds the pod configuration (KBS URL, image policy URI, namespace) to
+  # the hardware attestation report so the cluster admin cannot modify the
+  # initdata without failing the configuration check.
+  #
+  # For full hardware binding, mr_td / rtmr_1 / rtmr_2 values can be added
+  # using the veritas tool from quay.io/openshift_sandboxed_containers/coco-tools.
+  # These pin the specific firmware, kernel, and kata-cc versions and must be
+  # updated after each OCP or kata-cc upgrade.
   reference-values.json: "[]"
