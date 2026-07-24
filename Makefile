@@ -27,7 +27,7 @@ ifeq ($(origin APP_TAG),undefined)
 endif
 
 APP_IMG        ?= $(REGISTRY)/$(APP_QUAY_REPO):$(APP_TAG)
-COSIGN_KEY          ?= cosign.key
+COSIGN_KEY          ?= app-container-verification-keys/cosign.key
 NRAS_API_KEY        ?=
 RUNTIME_CLASS       ?= nvidia
 KATA_RUNTIME_CLASS  ?= kata-cc-nvidia-gpu
@@ -97,7 +97,7 @@ help:
 	@echo "    setup-trustee-in-cluster - Install Trustee KBS operator and configure attestation policy"
 	@echo "                               Requires setup-kata to have completed first (kata-cc must exist)"
 	@echo "    setup-attestation        - Register model key, cosign key, and image policy with KBS"
-	@echo "                               (requires NAMESPACE, MODEL_ENCRYPTION_KEY, cosign.pub)"
+	@echo "                               (requires NAMESPACE, MODEL_ENCRYPTION_KEY, app-container-verification-keys/cosign.pub)"
 	@echo ""
 	@echo "  Deploy:"
 	@echo "    install          - Install the app to the cluster via Helm (requires NAMESPACE;"
@@ -124,11 +124,10 @@ help:
 	@echo "  MODEL_ENCRYPTION_KEY   - AES-256-CBC key (required for build-modelcar and setup-attestation)"
 	@echo "  KATA_RUNTIME_CLASS     - kata runtimeClass for install (default: kata-cc-nvidia-gpu)"
 	@echo "  KBS_URL                - KBS route URL for setup-attestation (default: auto-detected from cluster)"
-	@echo "  COSIGN_KEY             - Path to cosign private key (default: cosign.key)"
-	@echo "  NRAS_API_KEY           - NVIDIA NGC Service Account Key (SAK) for NRAS GPU attestation."
-	@echo "                           A standard personal API key will NOT work — create a SAK at ngc.nvidia.com:"
-	@echo "                           Organization -> Service Keys -> Create Service Key"
-	@echo "                           Service: NVIDIA Attestation, Scope: All Scopes, Entity Type: All Entity"
+	@echo "  COSIGN_KEY             - Path to cosign private key (default: app-container-verification-keys/cosign.key)"
+	@echo "  NRAS_API_KEY           - NVIDIA NGC personal API key for NRAS GPU attestation."
+	@echo "                           Create at ngc.nvidia.com: click your name -> Account Settings -> Generate API Key"
+	@echo "                           Select 'Public API Endpoints' under Services Included."
 	@echo "                           Passed to setup-trustee-in-cluster to create the nras-api-key Secret."
 	@echo "  N_SAMPLES              - Inline slices to extract as sample inputs (default: 15)"
 	@echo "  APP_QUAY_REPO          - App repository name (default: conf-gpu-accel-seismic-interp-deepseismic-app)"
@@ -435,8 +434,9 @@ run-inference:
 
 .PHONY: generate-keys
 generate-keys:
-	cosign generate-key-pair --output-key-prefix cosign
-	@echo "cosign.key and cosign.pub generated — keep cosign.key private, never commit it"
+	mkdir -p app-container-verification-keys
+	cosign generate-key-pair --output-key-prefix app-container-verification-keys/cosign
+	@echo "app-container-verification-keys/cosign.key and cosign.pub generated — keep cosign.key private, never commit it"
 
 .PHONY: sign-modelcar
 sign-modelcar:
@@ -800,10 +800,10 @@ setup-trustee-in-cluster:
 	    fi; \
 	else \
 	    echo "WARNING: NRAS_API_KEY not set — GPU CC attestation will not be verified."; \
-	    echo "         Create an NGC Service Account Key (SAK) at https://ngc.nvidia.com:"; \
-	    echo "           Organization -> Service Keys -> Create Service Key"; \
-	    echo "           Service: NVIDIA Attestation, Scope: All Scopes, Entity Type: All Entity"; \
-	    echo "         A standard personal API key will NOT work. Then re-run:"; \
+	    echo "         Create a personal NGC API key at https://ngc.nvidia.com:"; \
+	    echo "           Click your name -> Account Settings -> Generate API Key"; \
+	    echo "           Select 'Public API Endpoints' under Services Included."; \
+	    echo "         Then re-run:"; \
 	    echo "           make setup-trustee-in-cluster NRAS_API_KEY=<your-sak>"; \
 	    echo "         The attestation policy enforces GPU CC mode — pods will fail attestation"; \
 	    echo "         if the Trustee AS cannot contact NRAS to verify the GPU CC report."; \
@@ -849,7 +849,7 @@ setup-trustee-in-cluster:
 setup-attestation:
 	@[ -n "$$NAMESPACE" ] || (echo "Error: NAMESPACE is not set"; exit 1)
 	@[ -n "$$MODEL_ENCRYPTION_KEY" ] || (echo "Error: MODEL_ENCRYPTION_KEY is not set"; exit 1)
-	@[ -f cosign.pub ] || (echo "Error: cosign.pub not found — run 'make generate-keys' first"; exit 1)
+	@[ -f app-container-verification-keys/cosign.pub ] || (echo "Error: app-container-verification-keys/cosign.pub not found — run 'make generate-keys' first"; exit 1)
 	@echo "Registering model key at kbs:///$(NAMESPACE)/conf-seismic-model-key/key..."
 	@# KBS uses a self-signed TLS cert — -k skips cert verification for this admin setup step.
 	@# KBS authentication is enforced by the kbs-auth-public-key, not by TLS cert trust.
@@ -857,7 +857,7 @@ setup-attestation:
 	    --data-binary "$(MODEL_ENCRYPTION_KEY)"
 	@echo "Registering cosign public key at kbs:///$(NAMESPACE)/conf-seismic-cosign-key/pub-key..."
 	@curl -fsSLk -X PUT $(KBS_URL)/kbs/v0/resource/$(NAMESPACE)/conf-seismic-cosign-key/pub-key \
-	    --data-binary @cosign.pub
+	    --data-binary @app-container-verification-keys/cosign.pub
 	@echo "Registering image verification policy at kbs:///$(NAMESPACE)/conf-seismic-image-policy/policy..."
 	@printf '{"default":[{"type":"reject"}],"transports":{"docker":{"%s":[{"type":"sigstoreSigned","keyPath":"kbs:///%s/conf-seismic-cosign-key/pub-key"}]}}}' \
 	    "$(APP_IMAGE_REPO)" "$(NAMESPACE)" \

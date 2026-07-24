@@ -3,8 +3,8 @@
 model-creation/model-weights/*.pth
 model-creation/model-weights/*.pth.enc
 
-# Cosign private key
-cosign.key
+# Cosign private key — the public key (cosign.pub) is committed; only the private key is ignored
+app-container-verification-keys/cosign.key
 
 # Local results and validation artefacts
 results/

@@ -575,6 +575,7 @@ If the label is not present, the BIOS settings are not correctly saved — revis
 2. Search for "OpenShift sandboxed containers"
 3. Select **OpenShift sandboxed containers operator** (Red Hat source)
 4. Click **Install**, leave defaults (namespace: `openshift-sandboxed-containers-operator`), set **Update approval** to **Manual**, click **Install**
+   > **Minimum version: 1.12** — this is the first release with NVIDIA GPU confidential computing support (`kata-cc-nvidia-gpu` runtime class and NRAS attestation).
 5. Go to **Operators → Installed Operators**, select namespace `openshift-sandboxed-containers-operator`, click **Upgrade available** and approve the InstallPlan
 6. Wait until the status shows **Succeeded**
 
@@ -669,7 +670,7 @@ Or follow the manual steps below.
 - Logged in as cluster-admin
 - `kata-cc` runtimeClass available (Kata containers setup above complete)
 - cert-manager installed (`openshift-cert-manager-operator` namespace)
-- NVIDIA NGC Service Account Key (SAK) for NRAS — required for GPU CC attestation verification. A standard personal API key will not work; NRAS requires a SAK configured specifically for the NVIDIA Attestation service (see Step 2a below). Without this, the Trustee AS cannot contact NRAS to verify the GPU CC report, and attestation will fail the `hardware` check.
+- NVIDIA NGC personal API key for NRAS — required for GPU CC attestation verification. Create one at [ngc.nvidia.com](https://ngc.nvidia.com) (free account) with **Public API Endpoints** selected under Services Included (see Step 2a below). Without this, the Trustee AS cannot contact NRAS to verify the GPU CC report, and attestation will fail the `hardware` check.
 
 #### Step 1: Install the Trustee operator
 
@@ -701,13 +702,12 @@ The private key is discarded immediately — KBS only needs the public key to ve
 
 #### Step 2a: Create the NRAS API key Secret
 
-The Trustee Attestation Service contacts NVIDIA NRAS (`nras.attestation.nvidia.com`) to verify GPU CC reports. NRAS requires a **Service Account Key (SAK)** — a standard personal NGC API key will not authenticate with NRAS.
+The Trustee Attestation Service contacts NVIDIA NRAS (`nras.attestation.nvidia.com`) to verify GPU CC reports. NRAS requires an NGC personal API key.
 
-To create the SAK at [ngc.nvidia.com](https://ngc.nvidia.com):
+To create one at [ngc.nvidia.com](https://ngc.nvidia.com):
 
-1. Account dropdown → **Organization**
-2. Left nav → **Service Keys** → **Create Service Key**
-3. Set **Service** to `NVIDIA Attestation`, **Scope** to `All Scopes`, **Entity Type** to `All Entity`
+1. Click your name (top right) → **Account Settings** → **Generate API Key**
+3. Set a name (e.g. `NRAS Key`), set expiration, and under **Services Included** check **Public API Endpoints**
 4. Copy the key immediately — it is shown only once
 
 Then create the Secret:
@@ -845,9 +845,37 @@ EOF
 
 #### Step 7: Register app-specific secrets with KBS
 
-The KBS has no web UI for secret registration. These three `curl` commands register the model key, cosign public key, and image verification policy directly against the KBS REST API. Get the KBS route hostname from Step 6, then run from a terminal with `MODEL_ENCRYPTION_KEY` set and `cosign.pub` present:
+In this step you are acting as the **model owner** — the party who decides which application code is permitted to decrypt their model. You review the application container image, sign it with your private key, and register the corresponding public key with KBS. From that point on, KBS will only release the model decryption key to a pod running an image you have explicitly signed. This is the "executables" factor of the three-factor attestation check.
+
+**Generate a cosign key pair (once):**
+
+```bash
+make generate-keys
+```
+
+This produces `app-container-verification-keys/cosign.key` (private — never commit or share this) and `app-container-verification-keys/cosign.pub` (public — registered with KBS below).
+
+**Sign the application image:**
+
+```bash
+make sign-app
+```
+
+This signs `quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-deepseismic-app:v1` with your private key. The signature is pushed to the same registry alongside the image.
+
+**Register secrets with KBS:**
+
+The KBS has no web UI for secret registration. These three `curl` commands register the model key, cosign public key, and image verification policy directly against the KBS REST API. Get the KBS route hostname from Step 6, then run from a terminal with `MODEL_ENCRYPTION_KEY` set and `app-container-verification-keys/cosign.pub` present:
 
 KBS uses a self-signed TLS certificate. The `-k` flag skips cert verification for these one-time admin registration calls — KBS authentication is enforced by the `kbs-auth-public-key` Ed25519 key, not by TLS cert trust.
+
+The model encryption key for the published quickstart model is:
+
+```
+MODEL_ENCRYPTION_KEY=7f27f40d746b5d92c2d2fe744096b0712ef9951955de9773b3eb20e2be07beda
+```
+
+> **Note:** This key is intentionally public. The model it protects — a U-Net trained on the Dutch F3 benchmark dataset — is MIT-licensed and not proprietary. The purpose of this quickstart is to demonstrate the attestation and key release mechanism, not to protect a sensitive model. In a real deployment the encryption key must be kept secret.
 
 ```bash
 KBS_ROUTE=$(oc get route kbs-route -n trustee-operator-system -o jsonpath='{.spec.host}')
@@ -859,7 +887,7 @@ curl -fsSLk -X PUT https://$KBS_ROUTE/kbs/v0/resource/$NAMESPACE/conf-seismic-mo
 
 # Cosign public key
 curl -fsSLk -X PUT https://$KBS_ROUTE/kbs/v0/resource/$NAMESPACE/conf-seismic-cosign-key/pub-key \
-    --data-binary @cosign.pub
+    --data-binary @app-container-verification-keys/cosign.pub
 
 # Image verification policy
 APP_IMAGE_REPO=quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-deepseismic-app
@@ -870,7 +898,13 @@ printf '{"default":[{"type":"reject"}],"transports":{"docker":{"%s":[{"type":"si
         --data-binary @-
 ```
 
-Or equivalently: `make setup-attestation NAMESPACE=$NAMESPACE KBS_URL=https://$KBS_ROUTE`
+Or equivalently:
+
+```bash
+KBS_ROUTE=$(oc get route kbs-route -n trustee-operator-system -o jsonpath='{.spec.host}')
+NAMESPACE=<your deployment namespace, e.g. seismic-interpretation>
+make setup-attestation NAMESPACE=$NAMESPACE KBS_URL=https://$KBS_ROUTE
+```
 
 > `make setup-intel-tee` (or `make setup-amd-tee`) runs the hardware prerequisite kernel parameter step. `make setup-kata` runs Part 1 Steps 1–2. `make setup-trustee-in-cluster` runs Trustee setup Steps 1–6 automatically (including Step 2a if `NRAS_API_KEY` is supplied). `make setup-attestation` performs Trustee setup Step 7.
 
@@ -1049,23 +1083,32 @@ This is not required to run the quickstart. The steps below are for model owners
 - `podman` or `docker`
 - `MODEL_ENCRYPTION_KEY` set in your environment (the AES-256-CBC key used during training)
 - `podman login quay.io` authenticated
-- `cosign` 2.0+ *(recommended — for signing the ModelCar as a supply chain integrity measure; not required for the KBS key release mechanism, which checks the application container signature instead)*
+- `cosign` 2.0+
 - The trained weights at `model-creation/model-weights/dutchf3_unet_final.pth` — copy them from the training PVC first with `make get-model NAMESPACE=<your-namespace>`
 
-#### Make targets
+#### Step 1: Generate a signing key pair
+
+As the model owner you control which application image is permitted to decrypt your model. You express this by signing the image with a private key and registering the corresponding public key with KBS. KBS will only release the decryption key to a pod running an image you have signed.
 
 ```bash
-# Encrypt weights inside the build and produce the ModelCar OCI image
+make generate-keys
+```
+
+This produces two files in `app-container-verification-keys/`:
+- `cosign.key` — your private signing key. **Keep this secret and never commit it.** (It is gitignored automatically.)
+- `cosign.pub` — the public key. This file is committed to the repository and registered with KBS in [Trustee setup Step 7](#step-7-register-app-specific-secrets-with-kbs) so KBS knows whose signature to trust.
+
+#### Step 2: Build and sign the ModelCar
+
+```bash
+# Encrypt weights and produce the ModelCar OCI image
 make build-modelcar MODEL_ENCRYPTION_KEY=$MODEL_ENCRYPTION_KEY
 
 # Push to quay.io
 make push-modelcar
 
-# Recommended: sign the ModelCar for supply chain integrity (requires cosign)
-# This does not affect KBS key release — the KBS checks the application
-# container signature (conf-gpu-accel-seismic-interp-app:v1), not the ModelCar
-make generate-keys     # Generate a cosign key pair (run once)
-make sign-modelcar     # Sign the pushed ModelCar image with cosign
+# Sign the pushed image
+make sign-modelcar
 ```
 
 #### What each step does
@@ -1077,12 +1120,7 @@ Encrypts `dutchf3_unet_final.pth` with AES-256-CBC inside the container build (t
 Pushes the image to quay.io.
 
 **`make sign-modelcar`**
-Signs the pushed image with cosign for supply chain integrity:
-
-```bash
-cosign sign --key ${COSIGN_KEY} \
-  quay.io/${QUAY_ORG}/${QUAY_REPO}:${QUAY_TAG}
-```
+Signs the pushed ModelCar image with your private key for supply chain integrity — proving the model artifact has not been tampered with between publication and use.
 
 #### After publishing
 
@@ -1091,6 +1129,15 @@ Update `helm/values.yaml` to point to your new image:
 ```yaml
 modelcar:
   image: quay.io/myorg/conf-gpu-accel-seismic-interp-model:v1
+```
+
+Re-register `app-container-verification-keys/cosign.pub` with KBS so the image verification policy uses your key — re-run the cosign public key `curl` command from [Trustee setup Step 7](#step-7-register-app-specific-secrets-with-kbs):
+
+```bash
+KBS_ROUTE=$(oc get route kbs-route -n trustee-operator-system -o jsonpath='{.spec.host}')
+NAMESPACE=<your deployment namespace>
+curl -fsSLk -X PUT https://$KBS_ROUTE/kbs/v0/resource/$NAMESPACE/conf-seismic-cosign-key/pub-key \
+    --data-binary @app-container-verification-keys/cosign.pub
 ```
 
 Then re-run the deploy steps from [Step 4](#step-4-deploy-the-application) onwards.
