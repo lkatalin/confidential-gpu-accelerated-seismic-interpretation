@@ -27,7 +27,8 @@ ifeq ($(origin APP_TAG),undefined)
 endif
 
 APP_IMG        ?= $(REGISTRY)/$(APP_QUAY_REPO):$(APP_TAG)
-COSIGN_KEY          ?= app-container-verification-keys/cosign.key
+MODELCAR_COSIGN_KEY ?= app-container-verification-keys/cosign.key
+MODEL_OWNER_COSIGN_KEY ?= model-owner-verification-keys/cosign.key
 NRAS_API_KEY        ?=
 RUNTIME_CLASS       ?= nvidia
 KATA_RUNTIME_CLASS  ?= kata-cc-nvidia-gpu
@@ -97,17 +98,18 @@ help:
 	@echo "    setup-trustee-in-cluster - Install Trustee KBS operator and configure attestation policy"
 	@echo "                               Requires setup-kata to have completed first (kata-cc must exist)"
 	@echo "    setup-attestation        - Register model key, cosign key, and image policy with KBS"
-	@echo "                               (requires NAMESPACE, MODEL_ENCRYPTION_KEY, app-container-verification-keys/cosign.pub)"
+	@echo "                               (requires NAMESPACE, MODEL_ENCRYPTION_KEY, model-owner-verification-keys/cosign.pub)"
 	@echo ""
 	@echo "  Deploy:"
 	@echo "    install          - Install the app to the cluster via Helm (requires NAMESPACE;"
 	@echo "                       fetches KBS cert from cluster and builds initdata blob automatically)"
 	@echo "    uninstall        - Uninstall the app from the cluster"
 	@echo ""
-	@echo "  Signing (optional):"
-	@echo "    generate-keys    - Generate a cosign key pair (run once)"
-	@echo "    sign-modelcar    - Sign the pushed ModelCar image with cosign"
-	@echo "    sign-app         - Sign the pushed application image with cosign"
+	@echo "  Signing:"
+	@echo "    generate-keys                     - Generate a cosign key pair in app-container-verification-keys/ (quickstart default)"
+	@echo "    generate-model-owner-keys         - Generate a cosign key pair in model-owner-verification-keys/ (custom model owner)"
+	@echo "    sign-modelcar                     - Sign the pushed ModelCar image with cosign"
+	@echo "    model-owner-sign-app-container    - Sign the pushed application image with cosign"
 	@echo ""
 	@echo "Configuration (set via environment variables or make arguments):"
 	@echo ""
@@ -124,7 +126,8 @@ help:
 	@echo "  MODEL_ENCRYPTION_KEY   - AES-256-CBC key (required for build-modelcar and setup-attestation)"
 	@echo "  KATA_RUNTIME_CLASS     - kata runtimeClass for install (default: kata-cc-nvidia-gpu)"
 	@echo "  KBS_URL                - KBS route URL for setup-attestation (default: auto-detected from cluster)"
-	@echo "  COSIGN_KEY             - Path to cosign private key (default: app-container-verification-keys/cosign.key)"
+	@echo "  MODELCAR_COSIGN_KEY    - Path to ModelCar signing key (default: app-container-verification-keys/cosign.key)"
+	@echo "  MODEL_OWNER_COSIGN_KEY - Path to model owner signing key (default: model-owner-verification-keys/cosign.key)"
 	@echo "  NRAS_API_KEY           - NVIDIA NGC personal API key for NRAS GPU attestation."
 	@echo "                           Create at ngc.nvidia.com: click your name -> Account Settings -> Generate API Key"
 	@echo "                           Select 'Public API Endpoints' under Services Included."
@@ -438,10 +441,16 @@ generate-keys:
 	cosign generate-key-pair --output-key-prefix app-container-verification-keys/cosign
 	@echo "app-container-verification-keys/cosign.key and cosign.pub generated — keep cosign.key private, never commit it"
 
+.PHONY: generate-model-owner-keys
+generate-model-owner-keys:
+	mkdir -p model-owner-verification-keys
+	cosign generate-key-pair --output-key-prefix model-owner-verification-keys/cosign
+	@echo "model-owner-verification-keys/cosign.key and cosign.pub generated — keep cosign.key private, never commit it"
+
 .PHONY: sign-modelcar
 sign-modelcar:
-	@[ -f "$(COSIGN_KEY)" ] || (echo "Error: $(COSIGN_KEY) not found — run 'make generate-keys' first"; exit 1)
-	cosign sign --key $(COSIGN_KEY) $(MODEL_IMG)
+	@[ -f "$(MODELCAR_COSIGN_KEY)" ] || (echo "Error: $(MODELCAR_COSIGN_KEY) not found — run 'make generate-keys' first"; exit 1)
+	cosign sign --key $(MODELCAR_COSIGN_KEY) $(MODEL_IMG)
 	@echo "Successfully signed $(MODEL_IMG)"
 
 .PHONY: build-app
@@ -454,10 +463,10 @@ build-app:
 push-app:
 	$(call push_image,$(APP_IMG))
 
-.PHONY: sign-app
-sign-app:
-	@[ -f "$(COSIGN_KEY)" ] || (echo "Error: $(COSIGN_KEY) not found — run 'make generate-keys' first"; exit 1)
-	cosign sign --key $(COSIGN_KEY) $(APP_IMG)
+.PHONY: model-owner-sign-app-container
+model-owner-sign-app-container:
+	@[ -f "$(MODEL_OWNER_COSIGN_KEY)" ] || (echo "Error: $(MODEL_OWNER_COSIGN_KEY) not found — run 'make generate-model-owner-keys' first"; exit 1)
+	cosign sign --key $(MODEL_OWNER_COSIGN_KEY) $(APP_IMG)
 	@echo "Successfully signed $(APP_IMG)"
 
 .PHONY: install
@@ -849,7 +858,7 @@ setup-trustee-in-cluster:
 setup-attestation:
 	@[ -n "$$NAMESPACE" ] || (echo "Error: NAMESPACE is not set"; exit 1)
 	@[ -n "$$MODEL_ENCRYPTION_KEY" ] || (echo "Error: MODEL_ENCRYPTION_KEY is not set"; exit 1)
-	@[ -f app-container-verification-keys/cosign.pub ] || (echo "Error: app-container-verification-keys/cosign.pub not found — run 'make generate-keys' first"; exit 1)
+	@[ -f model-owner-verification-keys/cosign.pub ] || (echo "Error: model-owner-verification-keys/cosign.pub not found — run 'make generate-model-owner-keys' first"; exit 1)
 	@echo "Registering model key at kbs:///$(NAMESPACE)/conf-seismic-model-key/key..."
 	@# KBS uses a self-signed TLS cert — -k skips cert verification for this admin setup step.
 	@# KBS authentication is enforced by the kbs-auth-public-key, not by TLS cert trust.
@@ -857,7 +866,7 @@ setup-attestation:
 	    --data-binary "$(MODEL_ENCRYPTION_KEY)"
 	@echo "Registering cosign public key at kbs:///$(NAMESPACE)/conf-seismic-cosign-key/pub-key..."
 	@curl -fsSLk -X PUT $(KBS_URL)/kbs/v0/resource/$(NAMESPACE)/conf-seismic-cosign-key/pub-key \
-	    --data-binary @app-container-verification-keys/cosign.pub
+	    --data-binary @model-owner-verification-keys/cosign.pub
 	@echo "Registering image verification policy at kbs:///$(NAMESPACE)/conf-seismic-image-policy/policy..."
 	@printf '{"default":[{"type":"reject"}],"transports":{"docker":{"%s":[{"type":"sigstoreSigned","keyPath":"kbs:///%s/conf-seismic-cosign-key/pub-key"}]}}}' \
 	    "$(APP_IMAGE_REPO)" "$(NAMESPACE)" \

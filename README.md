@@ -850,22 +850,22 @@ In this step you are acting as the **model owner** — the party who decides whi
 **Generate a cosign key pair (once):**
 
 ```bash
-make generate-keys
+make generate-model-owner-keys
 ```
 
-This produces `app-container-verification-keys/cosign.key` (private — never commit or share this) and `app-container-verification-keys/cosign.pub` (public — registered with KBS below).
+This produces `model-owner-verification-keys/cosign.key` (private — never commit or share this) and `model-owner-verification-keys/cosign.pub` (public — registered with KBS below).
 
 **Sign the application image:**
 
 ```bash
-make sign-app
+make model-owner-sign-app-container
 ```
 
 This signs `quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-deepseismic-app:v1` with your private key. The signature is pushed to the same registry alongside the image.
 
 **Register secrets with KBS:**
 
-The KBS has no web UI for secret registration. These three `curl` commands register the model key, cosign public key, and image verification policy directly against the KBS REST API. Get the KBS route hostname from Step 6, then run from a terminal with `MODEL_ENCRYPTION_KEY` set and `app-container-verification-keys/cosign.pub` present:
+The KBS has no web UI for secret registration. These three `curl` commands register the model key, cosign public key, and image verification policy directly against the KBS REST API. Get the KBS route hostname from Step 6, then run from a terminal with `MODEL_ENCRYPTION_KEY` set and `model-owner-verification-keys/cosign.pub` present:
 
 KBS uses a self-signed TLS certificate. The `-k` flag skips cert verification for these one-time admin registration calls — KBS authentication is enforced by the `kbs-auth-public-key` Ed25519 key, not by TLS cert trust.
 
@@ -887,7 +887,7 @@ curl -fsSLk -X PUT https://$KBS_ROUTE/kbs/v0/resource/$NAMESPACE/conf-seismic-mo
 
 # Cosign public key
 curl -fsSLk -X PUT https://$KBS_ROUTE/kbs/v0/resource/$NAMESPACE/conf-seismic-cosign-key/pub-key \
-    --data-binary @app-container-verification-keys/cosign.pub
+    --data-binary @model-owner-verification-keys/cosign.pub
 
 # Image verification policy
 APP_IMAGE_REPO=quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-deepseismic-app
@@ -1091,10 +1091,10 @@ This is not required to run the quickstart. The steps below are for model owners
 As the model owner you control which application image is permitted to decrypt your model. You express this by signing the image with a private key and registering the corresponding public key with KBS. KBS will only release the decryption key to a pod running an image you have signed.
 
 ```bash
-make generate-keys
+make generate-model-owner-keys
 ```
 
-This produces two files in `app-container-verification-keys/`:
+This produces two files in `model-owner-verification-keys/`:
 - `cosign.key` — your private signing key. **Keep this secret and never commit it.** (It is gitignored automatically.)
 - `cosign.pub` — the public key. This file is committed to the repository and registered with KBS in [Trustee setup Step 7](#step-7-register-app-specific-secrets-with-kbs) so KBS knows whose signature to trust.
 
@@ -1131,13 +1131,13 @@ modelcar:
   image: quay.io/myorg/conf-gpu-accel-seismic-interp-model:v1
 ```
 
-Re-register `app-container-verification-keys/cosign.pub` with KBS so the image verification policy uses your key — re-run the cosign public key `curl` command from [Trustee setup Step 7](#step-7-register-app-specific-secrets-with-kbs):
+Re-register `model-owner-verification-keys/cosign.pub` with KBS so the image verification policy uses your key — re-run the cosign public key `curl` command from [Trustee setup Step 7](#step-7-register-app-specific-secrets-with-kbs):
 
 ```bash
 KBS_ROUTE=$(oc get route kbs-route -n trustee-operator-system -o jsonpath='{.spec.host}')
 NAMESPACE=<your deployment namespace>
 curl -fsSLk -X PUT https://$KBS_ROUTE/kbs/v0/resource/$NAMESPACE/conf-seismic-cosign-key/pub-key \
-    --data-binary @app-container-verification-keys/cosign.pub
+    --data-binary @model-owner-verification-keys/cosign.pub
 ```
 
 Then re-run the deploy steps from [Step 4](#step-4-deploy-the-application) onwards.
