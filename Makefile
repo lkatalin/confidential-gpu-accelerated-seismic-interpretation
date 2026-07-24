@@ -767,19 +767,18 @@ setup-trustee-in-cluster:
 	fi; \
 	\
 	echo "=== Step 1a: kbs-auth-public-key Secret ==="; \
-	if oc get secret kbs-auth-public-key -n trustee-operator-system \
-	        --ignore-not-found 2>/dev/null | grep -q .; then \
-	    echo "WARNING: kbs-auth-public-key Secret already exists, skipping."; \
-	else \
-	    echo "Generating kbs-auth-public-key (Ed25519)..."; \
-	    openssl genpkey -algorithm ed25519 -out /tmp/kbs-private.pem; \
-	    openssl pkey -in /tmp/kbs-private.pem -pubout -out /tmp/kbs-public.pem; \
-	    oc create secret generic kbs-auth-public-key \
-	        -n trustee-operator-system \
-	        --from-file=publicKey=/tmp/kbs-public.pem; \
-	    rm -f /tmp/kbs-private.pem /tmp/kbs-public.pem; \
-	    echo "kbs-auth-public-key Secret created."; \
+	if [ ! -f trustee-api-keys/kbs-auth.key ]; then \
+	    echo "Generating Ed25519 KBS admin key pair..."; \
+	    openssl genpkey -algorithm ed25519 -out trustee-api-keys/kbs-auth.key; \
+	    echo "Saved private key to trustee-api-keys/kbs-auth.key (never commit or share this)."; \
 	fi; \
+	openssl pkey -in trustee-api-keys/kbs-auth.key -pubout -out /tmp/kbs-public.pem; \
+	oc create secret generic kbs-auth-public-key \
+	    -n trustee-operator-system \
+	    --from-file=publicKey=/tmp/kbs-public.pem \
+	    --dry-run=client -o yaml | oc apply -f -; \
+	rm -f /tmp/kbs-public.pem; \
+	echo "kbs-auth-public-key Secret applied."; \
 	\
 	echo "=== Step 1b: cert-manager Issuer and TLS Certificates ==="; \
 	if oc get secret trustee-tls-cert -n trustee-operator-system \
@@ -852,18 +851,28 @@ setup-attestation:
 	@[ -n "$$NAMESPACE" ] || (echo "Error: NAMESPACE is not set"; exit 1)
 	@[ -n "$$MODEL_ENCRYPTION_KEY" ] || (echo "Error: MODEL_ENCRYPTION_KEY is not set"; exit 1)
 	@[ -f model-owner-verification-keys/cosign.pub ] || (echo "Error: model-owner-verification-keys/cosign.pub not found — run 'make generate-model-owner-keys' first"; exit 1)
-	@echo "Registering model key at kbs:///$(NAMESPACE)/conf-seismic-model-key/key..."
+	@[ -f trustee-api-keys/kbs-auth.key ] || (echo "Error: trustee-api-keys/kbs-auth.key not found — run 'make setup-trustee-in-cluster' first"; exit 1)
+	@# Generate a short-lived EdDSA JWT to authenticate KBS admin API calls.
 	@# KBS uses a self-signed TLS cert — -k skips cert verification for this admin setup step.
-	@# KBS authentication is enforced by the kbs-auth-public-key, not by TLS cert trust.
-	@curl -fsSLk -X PUT $(KBS_URL)/kbs/v0/resource/$(NAMESPACE)/conf-seismic-model-key/key \
-	    --data-binary "$(MODEL_ENCRYPTION_KEY)"
-	@echo "Registering cosign public key at kbs:///$(NAMESPACE)/conf-seismic-cosign-key/pub-key..."
-	@curl -fsSLk -X PUT $(KBS_URL)/kbs/v0/resource/$(NAMESPACE)/conf-seismic-cosign-key/pub-key \
-	    --data-binary @model-owner-verification-keys/cosign.pub
-	@echo "Registering image verification policy at kbs:///$(NAMESPACE)/conf-seismic-image-policy/policy..."
-	@printf '{"default":[{"type":"reject"}],"transports":{"docker":{"%s":[{"type":"sigstoreSigned","keyPath":"kbs:///%s/conf-seismic-cosign-key/pub-key"}],"%s":[{"type":"sigstoreSigned","keyPath":"kbs:///%s/conf-seismic-cosign-key/pub-key"}]}}}' \
+	@set -e; \
+	HEADER=$$(printf '%s' '{"alg":"EdDSA","typ":"JWT"}' | base64 -w0 | tr '+/' '-_' | tr -d '='); \
+	PAYLOAD=$$(printf '{"exp":%d}' "$$(( $$(date +%s) + 300 ))" | base64 -w0 | tr '+/' '-_' | tr -d '='); \
+	MSG="$$HEADER.$$PAYLOAD"; \
+	SIG=$$(printf '%s' "$$MSG" | openssl pkeyutl -sign -inkey trustee-api-keys/kbs-auth.key -rawin | base64 -w0 | tr '+/' '-_' | tr -d '='); \
+	KBS_TOKEN="$$MSG.$$SIG"; \
+	echo "Registering model key at kbs:///$(NAMESPACE)/conf-seismic-model-key/key..."; \
+	curl -fsSLk -X PUT $(KBS_URL)/kbs/v0/resource/$(NAMESPACE)/conf-seismic-model-key/key \
+	    -H "Authorization: $$KBS_TOKEN" \
+	    --data-binary "$(MODEL_ENCRYPTION_KEY)"; \
+	echo "Registering cosign public key at kbs:///$(NAMESPACE)/conf-seismic-cosign-key/pub-key..."; \
+	curl -fsSLk -X PUT $(KBS_URL)/kbs/v0/resource/$(NAMESPACE)/conf-seismic-cosign-key/pub-key \
+	    -H "Authorization: $$KBS_TOKEN" \
+	    --data-binary @model-owner-verification-keys/cosign.pub; \
+	echo "Registering image verification policy at kbs:///$(NAMESPACE)/conf-seismic-image-policy/policy..."; \
+	printf '{"default":[{"type":"reject"}],"transports":{"docker":{"%s":[{"type":"sigstoreSigned","keyPath":"kbs:///%s/conf-seismic-cosign-key/pub-key"}],"%s":[{"type":"sigstoreSigned","keyPath":"kbs:///%s/conf-seismic-cosign-key/pub-key"}]}}}' \
 	    "$(APP_IMAGE_REPO)" "$(NAMESPACE)" "$(MODEL_IMAGE_REPO)" "$(NAMESPACE)" \
 	    | curl -fsSLk -X PUT $(KBS_URL)/kbs/v0/resource/$(NAMESPACE)/conf-seismic-image-policy/policy \
+	        -H "Authorization: $$KBS_TOKEN" \
 	        --data-binary @-
 	@echo "Computing tdx_pcr08 (initdata configuration binding)..."
 	@set -e; \

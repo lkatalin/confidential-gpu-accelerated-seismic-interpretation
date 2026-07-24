@@ -865,9 +865,7 @@ The published quickstart images are pre-signed and `model-owner-verification-key
 
 **Register secrets with KBS:**
 
-The KBS has no web UI for secret registration. These `curl` commands register the model key, cosign public key, image verification policy, and RVPS initdata binding directly against the KBS REST API. Get the KBS route hostname from Step 6, then run from a terminal with `MODEL_ENCRYPTION_KEY` set and `model-owner-verification-keys/cosign.pub` present:
-
-KBS uses a self-signed TLS certificate. The `-k` flag skips cert verification for these one-time admin registration calls — KBS authentication is enforced by the `kbs-auth-public-key` Ed25519 key, not by TLS cert trust.
+The KBS REST API requires a short-lived JWT signed with the Ed25519 private key registered during Trustee setup (`trustee-api-keys/kbs-auth.key`). Generate the token, then use it as the `Authorization` header on every registration call. KBS uses a self-signed TLS certificate — `-k` skips cert verification for these admin calls.
 
 The model encryption key for the published quickstart model is:
 
@@ -881,12 +879,22 @@ MODEL_ENCRYPTION_KEY=7f27f40d746b5d92c2d2fe744096b0712ef9951955de9773b3eb20e2be0
 KBS_ROUTE=$(oc get route kbs-route -n trustee-operator-system -o jsonpath='{.spec.host}')
 NAMESPACE=<your deployment namespace, e.g. seismic-interpretation>
 
+# Generate a short-lived JWT (5 min TTL) to authenticate KBS admin API calls.
+# Requires trustee-api-keys/kbs-auth.key from the Trustee setup step.
+HEADER=$(printf '%s' '{"alg":"EdDSA","typ":"JWT"}' | base64 -w0 | tr '+/' '-_' | tr -d '=')
+PAYLOAD=$(printf '{"exp":%d}' "$(($(date +%s) + 300))" | base64 -w0 | tr '+/' '-_' | tr -d '=')
+MSG="$HEADER.$PAYLOAD"
+SIG=$(printf '%s' "$MSG" | openssl pkeyutl -sign -inkey trustee-api-keys/kbs-auth.key -rawin | base64 -w0 | tr '+/' '-_' | tr -d '=')
+KBS_TOKEN="$MSG.$SIG"
+
 # Model decryption key
 curl -fsSLk -X PUT https://$KBS_ROUTE/kbs/v0/resource/$NAMESPACE/conf-seismic-model-key/key \
+    -H "Authorization: $KBS_TOKEN" \
     --data-binary "$MODEL_ENCRYPTION_KEY"
 
 # Cosign public key
 curl -fsSLk -X PUT https://$KBS_ROUTE/kbs/v0/resource/$NAMESPACE/conf-seismic-cosign-key/pub-key \
+    -H "Authorization: $KBS_TOKEN" \
     --data-binary @model-owner-verification-keys/cosign.pub
 
 # Image verification policy — both the app and ModelCar images must be signed by the model owner key.
@@ -897,6 +905,7 @@ printf '{"default":[{"type":"reject"}],"transports":{"docker":{"%s":[{"type":"si
     "$APP_IMAGE_REPO" "$NAMESPACE" "$MODEL_IMAGE_REPO" "$NAMESPACE" \
     | curl -fsSLk -X PUT \
         https://$KBS_ROUTE/kbs/v0/resource/$NAMESPACE/conf-seismic-image-policy/policy \
+        -H "Authorization: $KBS_TOKEN" \
         --data-binary @-
 
 # RVPS initdata binding — registers the expected tdx_pcr08 value so the
