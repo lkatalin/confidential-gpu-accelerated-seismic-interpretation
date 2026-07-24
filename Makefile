@@ -767,6 +767,7 @@ setup-trustee-in-cluster:
 	fi; \
 	\
 	echo "=== Step 1a: kbs-auth-public-key Secret ==="; \
+	mkdir -p trustee-api-keys; \
 	if [ ! -f trustee-api-keys/kbs-auth.key ]; then \
 	    echo "Generating Ed25519 KBS admin key pair..."; \
 	    openssl genpkey -algorithm ed25519 -out trustee-api-keys/kbs-auth.key; \
@@ -858,7 +859,9 @@ setup-attestation:
 	HEADER=$$(printf '%s' '{"alg":"EdDSA","typ":"JWT"}' | base64 -w0 | tr '+/' '-_' | tr -d '='); \
 	PAYLOAD=$$(printf '{"exp":%d}' "$$(( $$(date +%s) + 300 ))" | base64 -w0 | tr '+/' '-_' | tr -d '='); \
 	MSG="$$HEADER.$$PAYLOAD"; \
-	SIG=$$(printf '%s' "$$MSG" | openssl pkeyutl -sign -inkey trustee-api-keys/kbs-auth.key -rawin | base64 -w0 | tr '+/' '-_' | tr -d '='); \
+	printf '%s' "$$MSG" > /tmp/kbs-jwt-msg; \
+	SIG=$$(openssl pkeyutl -sign -inkey trustee-api-keys/kbs-auth.key -rawin -in /tmp/kbs-jwt-msg | base64 -w0 | tr '+/' '-_' | tr -d '='); \
+	rm -f /tmp/kbs-jwt-msg; \
 	KBS_TOKEN="$$MSG.$$SIG"; \
 	echo "Registering model key at kbs:///$(NAMESPACE)/conf-seismic-model-key/key..."; \
 	curl -fsSLk -X PUT $(KBS_URL)/kbs/v0/resource/$(NAMESPACE)/conf-seismic-model-key/key \
