@@ -701,18 +701,17 @@ Or follow the manual steps below.
 
 #### Step 2: Create the kbs-auth-public-key Secret
 
-KBS will not start without an Ed25519 key pair. Run this once from any machine with `oc` access:
+KBS will not start without an Ed25519 key pair. The private key is saved to `trustee-api-keys/kbs-auth.key` — it is needed later in Step 7 to authenticate KBS admin API calls. It is git-ignored and must never be committed or shared.
 
 ```bash
-openssl genpkey -algorithm ed25519 -out /tmp/kbs-private.pem
-openssl pkey -in /tmp/kbs-private.pem -pubout -out /tmp/kbs-public.pem
+openssl genpkey -algorithm ed25519 -out trustee-api-keys/kbs-auth.key
+openssl pkey -in trustee-api-keys/kbs-auth.key -pubout -out /tmp/kbs-public.pem
 oc create secret generic kbs-auth-public-key \
     -n trustee-operator-system \
-    --from-file=publicKey=/tmp/kbs-public.pem
-rm /tmp/kbs-private.pem /tmp/kbs-public.pem
+    --from-file=publicKey=/tmp/kbs-public.pem \
+    --dry-run=client -o yaml | oc apply -f -
+rm /tmp/kbs-public.pem
 ```
-
-The private key is discarded immediately — KBS only needs the public key to verify client attestation tokens.
 
 #### Step 2a: Create the NRAS API key Secret
 
