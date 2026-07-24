@@ -767,19 +767,19 @@ setup-trustee-in-cluster:
 	fi; \
 	\
 	echo "=== Step 1a: kbs-auth-public-key Secret ==="; \
-	mkdir -p trustee-api-keys; \
-	if [ ! -f trustee-api-keys/kbs-auth.key ]; then \
-	    echo "Generating Ed25519 KBS admin key pair..."; \
-	    openssl genpkey -algorithm ed25519 -out trustee-api-keys/kbs-auth.key; \
-	    echo "Saved private key to trustee-api-keys/kbs-auth.key (never commit or share this)."; \
+	if oc get secret kbs-auth-public-key -n trustee-operator-system \
+	        --ignore-not-found 2>/dev/null | grep -q .; then \
+	    echo "WARNING: kbs-auth-public-key Secret already exists, skipping."; \
+	else \
+	    echo "Generating Ed25519 key pair for KBS..."; \
+	    openssl genpkey -algorithm ed25519 -out /tmp/kbs-private.pem; \
+	    openssl pkey -in /tmp/kbs-private.pem -pubout -out /tmp/kbs-public.pem; \
+	    oc create secret generic kbs-auth-public-key \
+	        -n trustee-operator-system \
+	        --from-file=publicKey=/tmp/kbs-public.pem; \
+	    rm -f /tmp/kbs-private.pem /tmp/kbs-public.pem; \
+	    echo "kbs-auth-public-key Secret created."; \
 	fi; \
-	openssl pkey -in trustee-api-keys/kbs-auth.key -pubout -out /tmp/kbs-public.pem; \
-	oc create secret generic kbs-auth-public-key \
-	    -n trustee-operator-system \
-	    --from-file=publicKey=/tmp/kbs-public.pem \
-	    --dry-run=client -o yaml | oc apply -f -; \
-	rm -f /tmp/kbs-public.pem; \
-	echo "kbs-auth-public-key Secret applied."; \
 	\
 	echo "=== Step 1b: cert-manager Issuer and TLS Certificates ==="; \
 	if oc get secret trustee-tls-cert -n trustee-operator-system \
@@ -852,42 +852,36 @@ setup-attestation:
 	@[ -n "$$NAMESPACE" ] || (echo "Error: NAMESPACE is not set"; exit 1)
 	@[ -n "$$MODEL_ENCRYPTION_KEY" ] || (echo "Error: MODEL_ENCRYPTION_KEY is not set"; exit 1)
 	@[ -f model-owner-verification-keys/cosign.pub ] || (echo "Error: model-owner-verification-keys/cosign.pub not found — run 'make generate-model-owner-keys' first"; exit 1)
-	@[ -f trustee-api-keys/kbs-auth.key ] || (echo "Error: trustee-api-keys/kbs-auth.key not found — run 'make setup-trustee-in-cluster' first"; exit 1)
-	@# Generate a short-lived EdDSA JWT to authenticate KBS admin API calls.
-	@# KBS uses a self-signed TLS cert — -k skips cert verification for this admin setup step.
-	@set -e; \
-	HEADER=$$(printf '%s' '{"alg":"EdDSA","typ":"JWT"}' | base64 -w0 | tr '+/' '-_' | tr -d '='); \
-	PAYLOAD=$$(printf '{"exp":%d}' "$$(( $$(date +%s) + 300 ))" | base64 -w0 | tr '+/' '-_' | tr -d '='); \
-	MSG="$$HEADER.$$PAYLOAD"; \
-	printf '%s' "$$MSG" > /tmp/kbs-jwt-msg; \
-	SIG=$$(openssl pkeyutl -sign -inkey trustee-api-keys/kbs-auth.key -rawin -in /tmp/kbs-jwt-msg | base64 -w0 | tr '+/' '-_' | tr -d '='); \
-	rm -f /tmp/kbs-jwt-msg; \
-	KBS_TOKEN="$$MSG.$$SIG"; \
-	echo "Registering model key at kbs:///$(NAMESPACE)/conf-seismic-model-key/key..."; \
-	curl -fsSLk -X PUT $(KBS_URL)/kbs/v0/resource/$(NAMESPACE)/conf-seismic-model-key/key \
-	    -H "Authorization: $$KBS_TOKEN" \
-	    --data-binary "$(MODEL_ENCRYPTION_KEY)"; \
-	echo "Registering cosign public key at kbs:///$(NAMESPACE)/conf-seismic-cosign-key/pub-key..."; \
-	curl -fsSLk -X PUT $(KBS_URL)/kbs/v0/resource/$(NAMESPACE)/conf-seismic-cosign-key/pub-key \
-	    -H "Authorization: $$KBS_TOKEN" \
-	    --data-binary @model-owner-verification-keys/cosign.pub; \
-	echo "Registering image verification policy at kbs:///$(NAMESPACE)/conf-seismic-image-policy/policy..."; \
-	printf '{"default":[{"type":"reject"}],"transports":{"docker":{"%s":[{"type":"sigstoreSigned","keyPath":"kbs:///%s/conf-seismic-cosign-key/pub-key"}],"%s":[{"type":"sigstoreSigned","keyPath":"kbs:///%s/conf-seismic-cosign-key/pub-key"}]}}}' \
-	    "$(APP_IMAGE_REPO)" "$(NAMESPACE)" "$(MODEL_IMAGE_REPO)" "$(NAMESPACE)" \
-	    | curl -fsSLk -X PUT $(KBS_URL)/kbs/v0/resource/$(NAMESPACE)/conf-seismic-image-policy/policy \
-	        -H "Authorization: $$KBS_TOKEN" \
-	        --data-binary @-
-	@echo "Computing tdx_pcr08 (initdata configuration binding)..."
+	@echo "Computing tdx_pcr08 (initdata configuration binding) for namespace $(NAMESPACE)..."
 	@set -e; \
 	KBS_CERT=$$(oc get secret trustee-tls-cert -n trustee-operator-system \
 	    -o jsonpath='{.data.tls\.crt}' | base64 -d); \
 	PCR8=$$(echo "$$KBS_CERT" | python3 scripts/build-initdata.py "$(KBS_URL)" "$(NAMESPACE)" --pcr8-only); \
 	echo "tdx_pcr08: $$PCR8"; \
-	REF_JSON=$$(python3 -c "import json,sys; print(json.dumps([{'name':'tdx_pcr08','value':[sys.argv[1]]}]))" "$$PCR8"); \
-	oc patch configmap conf-seismic-rvps-reference-values \
+	CURRENT_REF=$$(oc get configmap conf-seismic-rvps-reference-values \
+	    -n trustee-operator-system \
+	    -o jsonpath='{.data.reference-values\.json}'); \
+	NEW_REF=$$(python3 -c "import json,sys; cur,pcr=sys.argv[1],sys.argv[2]; entries=(json.loads(cur) if cur.strip() else []); m=[e for e in entries if e.get('name')=='tdx_pcr08']; m[0]['value'].append(pcr) if m and pcr not in m[0]['value'] else (None if m else entries.append({'name':'tdx_pcr08','value':[pcr]})); print(json.dumps(entries))" "$$CURRENT_REF" "$$PCR8"); \
+	oc create configmap conf-seismic-rvps-reference-values \
+	    -n trustee-operator-system \
+	    --from-literal="reference-values.json=$$NEW_REF" \
+	    --dry-run=client -o yaml | oc apply -f -
+	@echo "Registering KBS secrets for namespace $(NAMESPACE) via kbsSecretResources..."
+	@set -e; \
+	POLICY=$$(printf '{"default":[{"type":"reject"}],"transports":{"docker":{"%s":[{"type":"sigstoreSigned","keyPath":"kbs:///default/%s/cosign-key"}],"%s":[{"type":"sigstoreSigned","keyPath":"kbs:///default/%s/cosign-key"}]}}}' \
+	    "$(APP_IMAGE_REPO)" "$(NAMESPACE)" "$(MODEL_IMAGE_REPO)" "$(NAMESPACE)"); \
+	oc create secret generic "$(NAMESPACE)" \
+	    -n trustee-operator-system \
+	    --from-literal=model-key="$(MODEL_ENCRYPTION_KEY)" \
+	    --from-file=cosign-key=model-owner-verification-keys/cosign.pub \
+	    --from-literal=image-policy="$$POLICY" \
+	    --dry-run=client -o yaml | oc apply -f -; \
+	RESOURCES=$$(oc get kbsconfig trusteeconfig-kbs-config -n trustee-operator-system \
+	    -o json | python3 -c "import json,sys; cfg=json.load(sys.stdin); lst=cfg.get('spec',{}).get('kbsSecretResources',[]) or []; ns=sys.argv[1]; lst.append(ns) if ns not in lst else None; print(json.dumps(lst))" "$(NAMESPACE)"); \
+	oc patch kbsconfig trusteeconfig-kbs-config \
 	    -n trustee-operator-system \
 	    --type merge \
-	    -p "{\"data\":{\"reference-values.json\":$$REF_JSON}}"; \
-	oc rollout restart deployment/trustee-deployment -n trustee-operator-system; \
-	oc rollout status deployment/trustee-deployment -n trustee-operator-system --timeout=2m
+	    -p "{\"spec\":{\"kbsSecretResources\":$$RESOURCES}}"
+	@echo "Waiting for Trustee to restart with updated configuration..."
+	@oc rollout status deployment/trustee-deployment -n trustee-operator-system --timeout=2m
 	@echo "Attestation secrets and RVPS reference values registered for namespace $(NAMESPACE)."

@@ -58,7 +58,7 @@ kbs_cert = \"\"\"
 \"\"\"
 
 [image]
-image_security_policy_uri = 'kbs:///{namespace}/conf-seismic-image-policy/policy'\
+image_security_policy_uri = 'kbs:///default/{namespace}/image-policy'\
 """
 
 policy_rego = """\

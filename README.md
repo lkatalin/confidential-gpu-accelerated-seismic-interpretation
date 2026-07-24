@@ -701,17 +701,15 @@ Or follow the manual steps below.
 
 #### Step 2: Create the kbs-auth-public-key Secret
 
-KBS will not start without an Ed25519 key pair. The private key is saved to `trustee-api-keys/kbs-auth.key` — it is needed later in Step 7 to authenticate KBS admin API calls. It is git-ignored and must never be committed or shared.
+KBS will not start without an Ed25519 key pair. Only the public key is needed — generate the pair, create the Secret, then discard both keys immediately.
 
 ```bash
-mkdir -p trustee-api-keys
-openssl genpkey -algorithm ed25519 -out trustee-api-keys/kbs-auth.key
-openssl pkey -in trustee-api-keys/kbs-auth.key -pubout -out /tmp/kbs-public.pem
+openssl genpkey -algorithm ed25519 -out /tmp/kbs-private.pem
+openssl pkey -in /tmp/kbs-private.pem -pubout -out /tmp/kbs-public.pem
 oc create secret generic kbs-auth-public-key \
     -n trustee-operator-system \
-    --from-file=publicKey=/tmp/kbs-public.pem \
-    --dry-run=client -o yaml | oc apply -f -
-rm /tmp/kbs-public.pem
+    --from-file=publicKey=/tmp/kbs-public.pem
+rm /tmp/kbs-private.pem /tmp/kbs-public.pem
 ```
 
 #### Step 2a: Create the NRAS API key Secret
@@ -857,15 +855,49 @@ EOF
 ```
 5. Go to **Workloads → Pods** and wait for `trustee-deployment-*` to restart and return to **Running**
 
-#### Step 7: Register app-specific secrets with KBS
+#### Step 7: Register RVPS initdata binding
 
-Register the model decryption key, cosign public key, and image verification policy with KBS. After this step KBS will only release the model key to a pod running an image signed by the holder of `model-owner-verification-keys/cosign.key` — the "executables" factor of the three-factor attestation check.
+Register the expected `tdx_pcr08` value so the cluster admin cannot tamper with the pod's initdata (KBS URL, image policy URI, namespace) without failing the configuration attestation check.
+
+```bash
+KBS_ROUTE=$(oc get route kbs-route -n trustee-operator-system -o jsonpath='{.spec.host}')
+NAMESPACE=<your deployment namespace, e.g. seismic-interpretation>
+KBS_CERT=$(oc get secret trustee-tls-cert -n trustee-operator-system \
+    -o jsonpath='{.data.tls\.crt}' | base64 -d)
+PCR8=$(echo "$KBS_CERT" | python3 scripts/build-initdata.py "https://$KBS_ROUTE" "$NAMESPACE" --pcr8-only)
+echo "tdx_pcr08: $PCR8"
+
+# Read the current reference values and append this namespace's tdx_pcr08.
+# Running this for a second namespace adds a second value to the allowlist
+# without removing the first — each namespace produces a distinct PCR8.
+CURRENT_REF=$(oc get configmap conf-seismic-rvps-reference-values \
+    -n trustee-operator-system \
+    -o jsonpath='{.data.reference-values\.json}')
+NEW_REF=$(python3 -c "
+import json, sys
+cur, pcr = sys.argv[1], sys.argv[2]
+entries = json.loads(cur) if cur.strip() else []
+m = [e for e in entries if e.get('name') == 'tdx_pcr08']
+if m:
+    if pcr not in m[0]['value']:
+        m[0]['value'].append(pcr)
+else:
+    entries.append({'name': 'tdx_pcr08', 'value': [pcr]})
+print(json.dumps(entries))
+" "$CURRENT_REF" "$PCR8")
+oc create configmap conf-seismic-rvps-reference-values \
+    -n trustee-operator-system \
+    --from-literal="reference-values.json=$NEW_REF" \
+    --dry-run=client -o yaml | oc apply -f -
+oc rollout restart deployment/trustee-deployment -n trustee-operator-system
+oc rollout status deployment/trustee-deployment -n trustee-operator-system --timeout=2m
+```
+
+#### Step 8: Register app-specific secrets with KBS
+
+Register the model decryption key, cosign public key, and image verification policy with KBS. Secrets are registered as a Kubernetes Secret in `trustee-operator-system` named after the deployment namespace; the Trustee operator mounts it into KBS via its `kbsSecretResources` mechanism. After this step KBS will only release the model key to a pod running an image signed by the holder of `model-owner-verification-keys/cosign.key` — the "executables" factor of the three-factor attestation check.
 
 The published quickstart images are pre-signed and `model-owner-verification-keys/cosign.pub` is already committed to this repository. If you are publishing your own images, see [Optional: Build and publish your own application](#optional-build-and-publish-your-own-application--model-owner) first.
-
-**Register secrets with KBS:**
-
-The KBS REST API requires a short-lived JWT signed with the Ed25519 private key registered during Trustee setup (`trustee-api-keys/kbs-auth.key`). Generate the token, then use it as the `Authorization` header on every registration call. KBS uses a self-signed TLS certificate — `-k` skips cert verification for these admin calls.
 
 The model encryption key for the published quickstart model is:
 
@@ -876,53 +908,38 @@ MODEL_ENCRYPTION_KEY=7f27f40d746b5d92c2d2fe744096b0712ef9951955de9773b3eb20e2be0
 > **Note:** This key is intentionally public. The model it protects — a U-Net trained on the Dutch F3 benchmark dataset — is MIT-licensed and not proprietary. The purpose of this quickstart is to demonstrate the attestation and key release mechanism, not to protect a sensitive model. In a real deployment the encryption key must be kept secret.
 
 ```bash
-KBS_ROUTE=$(oc get route kbs-route -n trustee-operator-system -o jsonpath='{.spec.host}')
 NAMESPACE=<your deployment namespace, e.g. seismic-interpretation>
-
-# Generate a short-lived JWT (5 min TTL) to authenticate KBS admin API calls.
-# Requires trustee-api-keys/kbs-auth.key from the Trustee setup step.
-HEADER=$(printf '%s' '{"alg":"EdDSA","typ":"JWT"}' | base64 -w0 | tr '+/' '-_' | tr -d '=')
-PAYLOAD=$(printf '{"exp":%d}' "$(($(date +%s) + 300))" | base64 -w0 | tr '+/' '-_' | tr -d '=')
-MSG="$HEADER.$PAYLOAD"
-printf '%s' "$MSG" > /tmp/kbs-jwt-msg
-SIG=$(openssl pkeyutl -sign -inkey trustee-api-keys/kbs-auth.key -rawin -in /tmp/kbs-jwt-msg | base64 -w0 | tr '+/' '-_' | tr -d '=')
-rm -f /tmp/kbs-jwt-msg
-KBS_TOKEN="$MSG.$SIG"
-
-# Model decryption key
-curl -fsSLk -X PUT https://$KBS_ROUTE/kbs/v0/resource/$NAMESPACE/conf-seismic-model-key/key \
-    -H "Authorization: $KBS_TOKEN" \
-    --data-binary "$MODEL_ENCRYPTION_KEY"
-
-# Cosign public key
-curl -fsSLk -X PUT https://$KBS_ROUTE/kbs/v0/resource/$NAMESPACE/conf-seismic-cosign-key/pub-key \
-    -H "Authorization: $KBS_TOKEN" \
-    --data-binary @model-owner-verification-keys/cosign.pub
-
-# Image verification policy — both the app and ModelCar images must be signed by the model owner key.
-# The default "reject" ensures no unsigned image can run inside the TEE.
 APP_IMAGE_REPO=quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-deepseismic-app
 MODEL_IMAGE_REPO=quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-deepseismic-model
-printf '{"default":[{"type":"reject"}],"transports":{"docker":{"%s":[{"type":"sigstoreSigned","keyPath":"kbs:///%s/conf-seismic-cosign-key/pub-key"}],"%s":[{"type":"sigstoreSigned","keyPath":"kbs:///%s/conf-seismic-cosign-key/pub-key"}]}}}' \
-    "$APP_IMAGE_REPO" "$NAMESPACE" "$MODEL_IMAGE_REPO" "$NAMESPACE" \
-    | curl -fsSLk -X PUT \
-        https://$KBS_ROUTE/kbs/v0/resource/$NAMESPACE/conf-seismic-image-policy/policy \
-        -H "Authorization: $KBS_TOKEN" \
-        --data-binary @-
 
-# RVPS initdata binding — registers the expected tdx_pcr08 value so the
-# cluster admin cannot modify initdata (KBS URL, image policy URI, namespace)
-# without failing the configuration attestation check.
-KBS_CERT=$(oc get secret trustee-tls-cert -n trustee-operator-system \
-    -o jsonpath='{.data.tls\.crt}' | base64 -d)
-PCR8=$(echo "$KBS_CERT" | python3 scripts/build-initdata.py "https://$KBS_ROUTE" "$NAMESPACE" --pcr8-only)
-echo "tdx_pcr08: $PCR8"
-REF_JSON=$(python3 -c "import json,sys; print(json.dumps([{'name':'tdx_pcr08','value':[sys.argv[1]]}]))" "$PCR8")
-oc patch configmap conf-seismic-rvps-reference-values \
+# Build image verification policy referencing kbs:///default/$NAMESPACE/cosign-key
+POLICY=$(printf '{"default":[{"type":"reject"}],"transports":{"docker":{"%s":[{"type":"sigstoreSigned","keyPath":"kbs:///default/%s/cosign-key"}],"%s":[{"type":"sigstoreSigned","keyPath":"kbs:///default/%s/cosign-key"}]}}}' \
+    "$APP_IMAGE_REPO" "$NAMESPACE" "$MODEL_IMAGE_REPO" "$NAMESPACE")
+
+# Create (or update) a Kubernetes Secret in trustee-operator-system named after the namespace.
+# The secret-converter init container maps this to kbs:///default/$NAMESPACE/<key>.
+oc create secret generic "$NAMESPACE" \
+    -n trustee-operator-system \
+    --from-literal=model-key="$MODEL_ENCRYPTION_KEY" \
+    --from-file=cosign-key=model-owner-verification-keys/cosign.pub \
+    --from-literal=image-policy="$POLICY" \
+    --dry-run=client -o yaml | oc apply -f -
+
+# Add the namespace Secret to kbsSecretResources so the operator mounts it into KBS.
+RESOURCES=$(oc get kbsconfig trusteeconfig-kbs-config -n trustee-operator-system \
+    -o json | python3 -c "
+import json, sys
+cfg = json.load(sys.stdin)
+lst = cfg.get('spec', {}).get('kbsSecretResources', []) or []
+ns = sys.argv[1]
+if ns not in lst:
+    lst.append(ns)
+print(json.dumps(lst))" "$NAMESPACE")
+oc patch kbsconfig trusteeconfig-kbs-config \
     -n trustee-operator-system \
     --type merge \
-    -p "{\"data\":{\"reference-values.json\":$REF_JSON}}"
-oc rollout restart deployment/trustee-deployment -n trustee-operator-system
+    -p "{\"spec\":{\"kbsSecretResources\":$RESOURCES}}"
+
 oc rollout status deployment/trustee-deployment -n trustee-operator-system --timeout=2m
 ```
 
@@ -934,7 +951,7 @@ NAMESPACE=<your deployment namespace, e.g. seismic-interpretation>
 make setup-attestation NAMESPACE=$NAMESPACE KBS_URL=https://$KBS_ROUTE
 ```
 
-> `make setup-intel-tee` (or `make setup-amd-tee`) runs the hardware prerequisite kernel parameter step. `make setup-kata` runs Part 1 Steps 1–2. `make setup-trustee-in-cluster` runs Trustee setup Steps 1–6 automatically (including Step 2a if `NRAS_API_KEY` is supplied). `make setup-attestation` performs all of Trustee setup Step 7: the three KBS `curl` registrations plus the RVPS `tdx_pcr08` ConfigMap update.
+> `make setup-intel-tee` (or `make setup-amd-tee`) runs the hardware prerequisite kernel parameter step. `make setup-kata` runs Part 1 Steps 1–2. `make setup-trustee-in-cluster` runs Trustee setup Steps 1–6 automatically (including Step 2a if `NRAS_API_KEY` is supplied). `make setup-attestation` performs Trustee setup Steps 7 and 8: the RVPS `tdx_pcr08` ConfigMap update followed by the three KBS secret registrations.
 
 ---
 
@@ -1159,13 +1176,17 @@ modelcar:
   image: quay.io/myorg/conf-gpu-accel-seismic-interp-model:v1
 ```
 
-Re-register `model-owner-verification-keys/cosign.pub` with KBS so the image verification policy uses your key — re-run the cosign public key `curl` command from [Trustee setup Step 7](#step-7-register-app-specific-secrets-with-kbs):
+Update the cosign key stored in KBS — patch just the `cosign-key` field in the namespace Secret and restart Trustee:
 
 ```bash
-KBS_ROUTE=$(oc get route kbs-route -n trustee-operator-system -o jsonpath='{.spec.host}')
 NAMESPACE=<your deployment namespace>
-curl -fsSLk -X PUT https://$KBS_ROUTE/kbs/v0/resource/$NAMESPACE/conf-seismic-cosign-key/pub-key \
-    --data-binary @model-owner-verification-keys/cosign.pub
+COSIGN_KEY_B64=$(base64 -w0 model-owner-verification-keys/cosign.pub)
+oc patch secret "$NAMESPACE" \
+    -n trustee-operator-system \
+    --type merge \
+    -p "{\"data\":{\"cosign-key\":\"$COSIGN_KEY_B64\"}}"
+oc rollout restart deployment/trustee-deployment -n trustee-operator-system
+oc rollout status deployment/trustee-deployment -n trustee-operator-system --timeout=2m
 ```
 
 Then re-run the deploy steps from [Step 4](#step-4-deploy-the-application) onwards.
@@ -1223,13 +1244,17 @@ app:
   image: quay.io/myorg/conf-gpu-accel-seismic-interp-deepseismic-app:v1
 ```
 
-If you also generated a new key pair, re-register the public key with KBS — re-run the cosign public key `curl` command from [Trustee setup Step 7](#step-7-register-app-specific-secrets-with-kbs):
+If you also generated a new key pair, update the cosign key stored in KBS — patch just the `cosign-key` field in the namespace Secret and restart Trustee:
 
 ```bash
-KBS_ROUTE=$(oc get route kbs-route -n trustee-operator-system -o jsonpath='{.spec.host}')
 NAMESPACE=<your deployment namespace>
-curl -fsSLk -X PUT https://$KBS_ROUTE/kbs/v0/resource/$NAMESPACE/conf-seismic-cosign-key/pub-key \
-    --data-binary @model-owner-verification-keys/cosign.pub
+COSIGN_KEY_B64=$(base64 -w0 model-owner-verification-keys/cosign.pub)
+oc patch secret "$NAMESPACE" \
+    -n trustee-operator-system \
+    --type merge \
+    -p "{\"data\":{\"cosign-key\":\"$COSIGN_KEY_B64\"}}"
+oc rollout restart deployment/trustee-deployment -n trustee-operator-system
+oc rollout status deployment/trustee-deployment -n trustee-operator-system --timeout=2m
 ```
 
 Then re-run the deploy steps from [Step 4](#step-4-deploy-the-application) onwards.
