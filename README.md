@@ -859,27 +859,13 @@ EOF
 
 #### Step 7: Register app-specific secrets with KBS
 
-In this step you are acting as the **model owner** — the party who decides which application code is permitted to decrypt their model. You review the application container image, sign it with your private key, and register the corresponding public key with KBS. From that point on, KBS will only release the model decryption key to a pod running an image you have explicitly signed. This is the "executables" factor of the three-factor attestation check.
+Register the model decryption key, cosign public key, and image verification policy with KBS. After this step KBS will only release the model key to a pod running an image signed by the holder of `model-owner-verification-keys/cosign.key` — the "executables" factor of the three-factor attestation check.
 
-**Generate a cosign key pair (once):**
-
-```bash
-make generate-model-owner-keys
-```
-
-This produces `model-owner-verification-keys/cosign.key` (private — never commit or share this) and `model-owner-verification-keys/cosign.pub` (public — registered with KBS below).
-
-**Sign the application image:**
-
-```bash
-make model-owner-sign-app-container
-```
-
-This signs `quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-deepseismic-app:v1` with your private key. The signature is pushed to the same registry alongside the image.
+The published quickstart images are pre-signed and `model-owner-verification-keys/cosign.pub` is already committed to this repository. If you are publishing your own images, see [Optional: Build and publish your own application](#optional-build-and-publish-your-own-application--model-owner) first.
 
 **Register secrets with KBS:**
 
-The KBS has no web UI for secret registration. These three `curl` commands register the model key, cosign public key, and image verification policy directly against the KBS REST API. Get the KBS route hostname from Step 6, then run from a terminal with `MODEL_ENCRYPTION_KEY` set and `model-owner-verification-keys/cosign.pub` present:
+The KBS has no web UI for secret registration. These `curl` commands register the model key, cosign public key, image verification policy, and RVPS initdata binding directly against the KBS REST API. Get the KBS route hostname from Step 6, then run from a terminal with `MODEL_ENCRYPTION_KEY` set and `model-owner-verification-keys/cosign.pub` present:
 
 KBS uses a self-signed TLS certificate. The `-k` flag skips cert verification for these one-time admin registration calls — KBS authentication is enforced by the `kbs-auth-public-key` Ed25519 key, not by TLS cert trust.
 
