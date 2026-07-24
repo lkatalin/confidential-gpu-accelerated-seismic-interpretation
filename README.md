@@ -704,6 +704,7 @@ Or follow the manual steps below.
 KBS will not start without an Ed25519 key pair. The private key is saved to `trustee-api-keys/kbs-auth.key` — it is needed later in Step 7 to authenticate KBS admin API calls. It is git-ignored and must never be committed or shared.
 
 ```bash
+mkdir -p trustee-api-keys
 openssl genpkey -algorithm ed25519 -out trustee-api-keys/kbs-auth.key
 openssl pkey -in trustee-api-keys/kbs-auth.key -pubout -out /tmp/kbs-public.pem
 oc create secret generic kbs-auth-public-key \
@@ -883,7 +884,9 @@ NAMESPACE=<your deployment namespace, e.g. seismic-interpretation>
 HEADER=$(printf '%s' '{"alg":"EdDSA","typ":"JWT"}' | base64 -w0 | tr '+/' '-_' | tr -d '=')
 PAYLOAD=$(printf '{"exp":%d}' "$(($(date +%s) + 300))" | base64 -w0 | tr '+/' '-_' | tr -d '=')
 MSG="$HEADER.$PAYLOAD"
-SIG=$(printf '%s' "$MSG" | openssl pkeyutl -sign -inkey trustee-api-keys/kbs-auth.key -rawin | base64 -w0 | tr '+/' '-_' | tr -d '=')
+printf '%s' "$MSG" > /tmp/kbs-jwt-msg
+SIG=$(openssl pkeyutl -sign -inkey trustee-api-keys/kbs-auth.key -rawin -in /tmp/kbs-jwt-msg | base64 -w0 | tr '+/' '-_' | tr -d '=')
+rm -f /tmp/kbs-jwt-msg
 KBS_TOKEN="$MSG.$SIG"
 
 # Model decryption key
