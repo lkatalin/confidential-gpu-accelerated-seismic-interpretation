@@ -30,7 +30,12 @@ APP_IMG        ?= $(REGISTRY)/$(APP_QUAY_REPO):$(APP_TAG)
 MODEL_OWNER_COSIGN_KEY ?= model-owner-verification-keys/cosign.key
 NRAS_API_KEY        ?=
 RUNTIME_CLASS       ?= nvidia
-KATA_RUNTIME_CLASS  ?= kata-cc-nvidia-gpu
+KATA_RUNTIME_CLASS    ?= kata-cc-nvidia-gpu
+# Space-separated list of node names to label nvidia.com/gpu.workload.config=vm-passthrough.
+# Nodes in this list stop advertising nvidia.com/gpu and instead advertise nvidia.com/pgpu.
+# Unlabeled GPU nodes continue serving standard CUDA workloads unchanged.
+# Example: GPU_PASSTHROUGH_NODES="worker-0 worker-1"
+GPU_PASSTHROUGH_NODES ?=
 APP_IMAGE_REPO       = $(shell echo $(APP_IMG) | cut -d: -f1)
 MODEL_IMAGE_REPO     = $(shell echo $(MODEL_IMG) | cut -d: -f1)
 KBS_URL             ?= https://$(shell oc get route kbs-route \
@@ -95,6 +100,10 @@ help:
 	@echo "    setup-kata               - Install NFD + NodeFeatureRule, then OSC + KataConfig"
 	@echo "                               Verifies TEE node label and kata-cc runtimeClass"
 	@echo "                               Requires setup-intel-tee or setup-amd-tee to have completed first"
+	@echo "                               Optionally labels GPU nodes: GPU_PASSTHROUGH_NODES=\"node1 node2\""
+	@echo "    setup-gpu-passthrough    - Label GPU node(s) for kata VM passthrough without re-running setup-kata"
+	@echo "                               Requires GPU_PASSTHROUGH_NODES=\"<node1> <node2>\""
+	@echo "                               Safe to run repeatedly — idempotent"
 	@echo "    setup-trustee-in-cluster - Install Trustee KBS operator and configure attestation policy"
 	@echo "                               Requires setup-kata to have completed first (kata-cc must exist)"
 	@echo "    setup-attestation        - Register model key, cosign key, and image policy with KBS;"
@@ -125,6 +134,10 @@ help:
 	@echo "  MODEL_IMG              - Full image ref (default: \$${REGISTRY}/\$${QUAY_REPO}:\$${QUAY_TAG})"
 	@echo "  MODEL_ENCRYPTION_KEY   - AES-256-CBC key (required for build-modelcar and setup-attestation)"
 	@echo "  KATA_RUNTIME_CLASS     - kata runtimeClass for install (default: kata-cc-nvidia-gpu)"
+	@echo "  GPU_PASSTHROUGH_NODES  - Space-separated node names to label for kata VM passthrough during setup-kata."
+	@echo "                           Labeled nodes stop advertising nvidia.com/gpu and advertise nvidia.com/pgpu instead."
+	@echo "                           Unlabeled GPU nodes continue serving standard CUDA workloads unchanged."
+	@echo "                           Example: make setup-kata GPU_PASSTHROUGH_NODES=\"worker-0 worker-1\""
 	@echo "  KBS_URL                - KBS route URL for setup-attestation (default: auto-detected from cluster)"
 	@echo "  MODEL_OWNER_COSIGN_KEY - Path to model owner signing key (default: model-owner-verification-keys/cosign.key)"
 	@echo "  NRAS_API_KEY           - NVIDIA NGC personal API key for NRAS GPU attestation."
@@ -733,7 +746,65 @@ setup-kata:
 	    sleep 30; \
 	done; \
 	echo "kata-cc-nvidia-gpu runtimeClass is ready."; \
+	echo "Configuring NVIDIA GPU Operator for kata VM passthrough (sandbox workloads)..."; \
+	oc patch clusterpolicy gpu-cluster-policy \
+	    --type merge \
+	    -p '{"spec":{"sandboxWorkloads":{"enabled":true,"defaultWorkload":"container","mode":"kata"}}}'; \
+	echo "GPU nodes available in this cluster:"; \
+	oc get nodes -l nvidia.com/gpu.present=true \
+	    -o custom-columns=NAME:.metadata.name,WORKLOAD:.metadata.labels."nvidia\.com/gpu\.workload\.config" \
+	    --no-headers; \
+	PASSTHROUGH_NODES="$(GPU_PASSTHROUGH_NODES)"; \
+	if [ -z "$$PASSTHROUGH_NODES" ]; then \
+	    echo ""; \
+	    echo "WARNING: GPU_PASSTHROUGH_NODES is not set — no nodes will be labeled for VM passthrough."; \
+	    echo "         Nodes labeled vm-passthrough stop advertising nvidia.com/gpu and only"; \
+	    echo "         advertise nvidia.com/pgpu. Unlabeled nodes are unaffected."; \
+	    echo "         To label node(s) without re-running the full setup, use:"; \
+	    echo "           make setup-gpu-passthrough GPU_PASSTHROUGH_NODES=\"<node1> <node2>\""; \
+	else \
+	    for NODE in $$PASSTHROUGH_NODES; do \
+	        if oc get node "$$NODE" &>/dev/null; then \
+	            oc label node "$$NODE" nvidia.com/gpu.workload.config=vm-passthrough --overwrite; \
+	            echo "Node $$NODE labeled for VM passthrough."; \
+	        else \
+	            echo "WARNING: Node '$$NODE' not found — skipping."; \
+	        fi; \
+	    done; \
+	fi; \
 	echo "=== setup-kata complete — run make setup-trustee-in-cluster next ==="
+
+.PHONY: setup-gpu-passthrough
+setup-gpu-passthrough:
+	@set -e; \
+	echo "=== GPU passthrough node labeling ==="; \
+	echo "GPU nodes available in this cluster:"; \
+	oc get nodes -l nvidia.com/gpu.present=true \
+	    -o custom-columns=NAME:.metadata.name,WORKLOAD:.metadata.labels."nvidia\.com/gpu\.workload\.config" \
+	    --no-headers; \
+	echo "Patching ClusterPolicy for sandbox workloads (idempotent)..."; \
+	oc patch clusterpolicy gpu-cluster-policy \
+	    --type merge \
+	    -p '{"spec":{"sandboxWorkloads":{"enabled":true,"defaultWorkload":"container","mode":"kata"}}}'; \
+	PASSTHROUGH_NODES="$(GPU_PASSTHROUGH_NODES)"; \
+	if [ -z "$$PASSTHROUGH_NODES" ]; then \
+	    echo "ERROR: GPU_PASSTHROUGH_NODES is not set."; \
+	    echo "       Usage: make setup-gpu-passthrough GPU_PASSTHROUGH_NODES=\"<node1> <node2>\""; \
+	    echo "       Run 'make setup-gpu-passthrough' without the variable to list available nodes."; \
+	    exit 1; \
+	fi; \
+	for NODE in $$PASSTHROUGH_NODES; do \
+	    if oc get node "$$NODE" &>/dev/null; then \
+	        oc label node "$$NODE" nvidia.com/gpu.workload.config=vm-passthrough --overwrite; \
+	        echo "Node $$NODE labeled for VM passthrough."; \
+	    else \
+	        echo "WARNING: Node '$$NODE' not found — skipping."; \
+	    fi; \
+	done; \
+	echo ""; \
+	echo "Nodes labeled vm-passthrough will stop advertising nvidia.com/gpu"; \
+	echo "and advertise nvidia.com/pgpu once the Sandbox Device Plugin restarts."; \
+	echo "Verify with: oc get node <node> -o jsonpath='{.status.allocatable}'"
 
 .PHONY: setup-trustee-in-cluster
 setup-trustee-in-cluster:

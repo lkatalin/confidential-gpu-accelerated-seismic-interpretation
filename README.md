@@ -467,6 +467,20 @@ To perform automatically (after the hardware prerequisite above is complete):
 make setup-kata
 ```
 
+After `setup-kata` completes, label the GPU node(s) you want to dedicate to kata VM passthrough. Nodes labeled `vm-passthrough` stop advertising `nvidia.com/gpu` and instead advertise `nvidia.com/pgpu` — unlabeled GPU nodes continue serving standard CUDA workloads unchanged:
+
+```bash
+make setup-gpu-passthrough GPU_PASSTHROUGH_NODES="<node1> <node2>"
+```
+
+You can also pass `GPU_PASSTHROUGH_NODES` directly to `setup-kata` to do both in one step:
+
+```bash
+make setup-kata GPU_PASSTHROUGH_NODES="<node1> <node2>"
+```
+
+`setup-gpu-passthrough` is safe to run repeatedly — use it any time you need to add or change which nodes are labeled without re-running the full `setup-kata` (which would re-apply MachineConfigs and trigger another node reboot rollout).
+
 Or follow the manual steps below.
 
 **Prerequisites:**
@@ -665,6 +679,74 @@ oc get runtimeclass | grep kata
 **Expected outcome:**
 - ✓ `kata-cc` runtimeClass listed
 - ✓ `kata-cc-nvidia-gpu` runtimeClass listed
+
+Configure the NVIDIA GPU Operator for kata VM passthrough. Kata GPU passthrough uses the **NVIDIA Sandbox Device Plugin** (separate from the standard device plugin) which advertises `nvidia.com/pgpu` resources and generates a VFIO-based CDI spec at `/var/run/cdi/nvidia.com-pgpu.yaml`.
+
+Enabling sandbox workloads is a cluster-wide policy change, but the impact on GPU resource availability is **scoped to individual nodes** by the `nvidia.com/gpu.workload.config=vm-passthrough` node label:
+
+- **Unlabeled GPU nodes** (no `workload.config` label): the `defaultWorkload: container` setting means they continue to advertise `nvidia.com/gpu` as normal. Standard CUDA workloads are unaffected.
+- **Nodes labeled `vm-passthrough`**: the standard device plugin stops advertising `nvidia.com/gpu` on that node. Only `nvidia.com/pgpu` is allocatable. **Any standard CUDA workload with a hard node selector pointing to this node will fail to get a GPU** — it must be moved to an unlabeled node first.
+
+> **Recommendation:** In multi-GPU-node clusters, label only the node(s) dedicated to confidential kata workloads. Leave the remaining GPU nodes unlabeled so they continue serving standard CUDA workloads.
+
+Enable sandbox workloads in the GPU Operator ClusterPolicy:
+
+```bash
+oc patch clusterpolicy gpu-cluster-policy \
+    --type merge \
+    -p '{"spec":{"sandboxWorkloads":{"enabled":true,"defaultWorkload":"container","mode":"kata"}}}'
+```
+
+List all GPU nodes and choose which one(s) to dedicate to kata passthrough:
+
+```bash
+oc get nodes -l nvidia.com/gpu.present=true \
+    -o custom-columns=NAME:.metadata.name,WORKLOAD:.metadata.labels."nvidia\.com/gpu\.workload\.config"
+```
+
+Label the chosen node(s) for VM passthrough. Repeat for each node you want to dedicate:
+
+```bash
+# Label a specific node (replace <node-name> with the actual node name):
+oc label node <node-name> nvidia.com/gpu.workload.config=vm-passthrough --overwrite
+
+# Or to label every GPU node (use only if all GPU nodes are dedicated to kata):
+# for NODE in $(oc get nodes -l nvidia.com/gpu.present=true -o name); do
+#   oc label $NODE nvidia.com/gpu.workload.config=vm-passthrough --overwrite
+# done
+```
+
+Store the node name for the verification commands below. Use the plain node name — do **not** use `oc get nodes -o name` as it outputs `node/<name>` which breaks subsequent `oc get node` commands:
+
+```bash
+GPU_NODE=<node-name>   # e.g. GPU_NODE=rh34-jharmiso-mig-0630-gpu01
+```
+
+Wait for the Sandbox Device Plugin pod to appear on the GPU node and for `nvidia.com/pgpu` to become allocatable:
+
+```bash
+oc get pods -n nvidia-gpu-operator \
+    --field-selector spec.nodeName=$GPU_NODE | grep sandbox
+
+oc get node $GPU_NODE \
+    -o jsonpath='{.status.allocatable}' | python3 -c \
+    "import json,sys; a=json.load(sys.stdin); print({k:v for k,v in a.items() if 'nvidia' in k})"
+```
+
+**Expected outcome:** `nvidia.com/pgpu: '2'` (or the number of physical GPUs on that node) is allocatable, and `nvidia.com/gpu: '0'` on that node.
+
+Then confirm the VFIO CDI spec was generated. In passthrough mode the container toolkit daemonset is not running — check the sandbox device plugin pod instead:
+
+```bash
+SANDBOX_POD=$(oc get pods -n nvidia-gpu-operator \
+    -l app=nvidia-kata-sandbox-device-plugin \
+    --field-selector spec.nodeName=$GPU_NODE \
+    -o jsonpath='{.items[0].metadata.name}')
+oc exec -n nvidia-gpu-operator $SANDBOX_POD -- \
+    find /var/run/cdi -name "nvidia.com-pgpu*" -type f
+```
+
+**Expected outcome:** `/var/run/cdi/nvidia.com-pgpu.yaml` is present.
 
 ---
 

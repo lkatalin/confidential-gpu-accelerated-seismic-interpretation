@@ -12,17 +12,14 @@ initdata: ""
 # KBS route URL — substituted into initdata at make install time.
 kbsUrl: ""
 
-tolerations:
-  - key: g5-gpu
-    operator: Exists
-    effect: NoSchedule
+tolerations: []
 
 resources:
   limits:
-    nvidia.com/gpu: "1"
+    nvidia.com/pgpu: "1"
     cpu: "8"
     memory: 24Gi
   requests:
-    nvidia.com/gpu: "1"
+    nvidia.com/pgpu: "1"
     cpu: "4"
     memory: 16Gi
