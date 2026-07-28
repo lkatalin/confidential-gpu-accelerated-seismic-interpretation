@@ -66,4 +66,5 @@ spec:
             failureThreshold: 6
       volumes:
         - name: models-cache
-          emptyDir: {}
+          emptyDir:
+            medium: Memory
