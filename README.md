@@ -417,10 +417,10 @@ Wait for the node to reboot and return to Ready:
 
 ```bash
 # Single-node — API server will be briefly unreachable during reboot:
-oc get mcp master -w
+oc wait mcp/master --for=condition=Updated=True --timeout=30m
 ```
 
-On single-node clusters the API server itself reboots, so the watch will disconnect for 2–5 minutes. Re-run `oc get mcp master` once the cluster is reachable again. Wait until `UPDATED=True`, `UPDATING=False`, `DEGRADED=False`.
+On single-node clusters the API server itself reboots during this wait, so the command will disconnect for 2–5 minutes. Re-run it once the cluster is reachable again.
 
 After the node comes back, verify TDX is active in the kernel:
 
@@ -763,10 +763,10 @@ oc apply -f helm/osc/templates/kubelet-config.yaml
 This triggers a MachineConfig rolling update — worker nodes drain and reboot one at a time. Wait for the pool to settle before proceeding:
 
 ```bash
-oc get mcp worker -w   # wait for UPDATED=True, DEGRADED=False
+oc wait mcp/worker --for=condition=Updated=True --timeout=30m
 ```
 
-> **Note:** On a single-node cluster apply `helm/osc/templates/kubelet-config-sno.yaml` instead (targets the `master` MCP), and watch `oc get mcp master -w`. The `make setup-kata` target detects the cluster type and applies the correct file automatically.
+> **Note:** On a single-node cluster apply `helm/osc/templates/kubelet-config-sno.yaml` instead (targets the `master` MCP), and run `oc wait mcp/master --for=condition=Updated=True --timeout=30m`. The `make setup-kata` target detects the cluster type and applies the correct file automatically.
 
 ---
 

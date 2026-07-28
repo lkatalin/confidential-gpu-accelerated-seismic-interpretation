@@ -55,7 +55,10 @@ name = "cc_kbc"
 url = "{kbs_url}"
 kbs_cert = \"\"\"
 {kbs_cert}
-\"\"\"\
+\"\"\"
+
+[api_server]
+address = "127.0.0.1:8006"\
 """
 
 policy_rego = """\
