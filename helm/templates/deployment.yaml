@@ -16,6 +16,7 @@ spec:
         app.kubernetes.io/name: {{ .Release.Name }}
       annotations:
         io.katacontainers.config.hypervisor.cc_init_data: "{{ .Values.initdata }}"
+        io.katacontainers.config.hypervisor.default_memory: "{{ .Values.kataMemoryMiB }}"
     spec:
       runtimeClassName: {{ .Values.runtimeClassName }}
       tolerations:

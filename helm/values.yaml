@@ -14,12 +14,18 @@ kbsUrl: ""
 
 tolerations: []
 
+# Initial RAM (MiB) for the kata VM. CDH unpacks all container images into
+# the VM's tmpfs before containers start, so this must exceed the total
+# uncompressed size of all images pulled inside the VM.
+# The app image is ~4.6 GB compressed / ~20 GB uncompressed.
+kataMemoryMiB: 24576   # 24 GB
+
 resources:
   limits:
     nvidia.com/pgpu: "1"
     cpu: "8"
-    memory: 24Gi
+    memory: 32Gi
   requests:
     nvidia.com/pgpu: "1"
     cpu: "4"
-    memory: 16Gi
+    memory: 24Gi
