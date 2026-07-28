@@ -772,6 +772,30 @@ setup-kata:
 	        fi; \
 	    done; \
 	fi; \
+	echo "Applying KubeletConfig to extend container-creation timeout for kata guest-pull..."; \
+	WORKER_COUNT=$$(oc get mcp worker \
+	    -o jsonpath='{.status.machineCount}' 2>/dev/null || echo "0"); \
+	if [ "$$WORKER_COUNT" = "0" ]; then \
+	    oc apply -f helm/osc/templates/kubelet-config-sno.yaml; \
+	    KUBELET_MCP=master; \
+	else \
+	    oc apply -f helm/osc/templates/kubelet-config.yaml; \
+	    KUBELET_MCP=worker; \
+	fi; \
+	echo "KubeletConfig applied — waiting for MachineConfigPool $$KUBELET_MCP rollout..."; \
+	DEADLINE=$$(( $$(date +%s) + 1800 )); \
+	while [ $$(date +%s) -lt $$DEADLINE ]; do \
+	    if oc get mcp $$KUBELET_MCP --no-headers 2>/dev/null \
+	            | awk '{print $$3,$$4,$$5}' | grep -q "True False False"; then \
+	        echo "MachineConfigPool $$KUBELET_MCP is updated."; break; \
+	    fi; \
+	    sleep 30; \
+	done; \
+	if [ $$(date +%s) -ge $$DEADLINE ]; then \
+	    echo "ERROR: MachineConfigPool $$KUBELET_MCP did not complete in 30 min."; \
+	    echo "       Run: oc get mcp && oc get nodes"; \
+	    exit 1; \
+	fi; \
 	echo "=== setup-kata complete — run make setup-trustee-in-cluster next ==="
 
 .PHONY: setup-gpu-passthrough

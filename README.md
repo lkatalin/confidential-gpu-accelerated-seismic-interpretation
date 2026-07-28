@@ -481,6 +481,8 @@ make setup-kata GPU_PASSTHROUGH_NODES="<node1> <node2>"
 
 `setup-gpu-passthrough` is safe to run repeatedly — use it any time you need to add or change which nodes are labeled without re-running the full `setup-kata` (which would re-apply MachineConfigs and trigger another node reboot rollout).
 
+Both `setup-kata` and `setup-gpu-passthrough` apply the `KubeletConfig` that extends the kubelet container-creation timeout (see Step 3 in the manual instructions below). This triggers an additional MachineConfig rolling update and node reboot after the kata setup completes.
+
 Or follow the manual steps below.
 
 **Prerequisites:**
@@ -747,6 +749,24 @@ oc exec -n nvidia-gpu-operator $SANDBOX_POD -- \
 ```
 
 **Expected outcome:** `/var/run/cdi/nvidia.com-pgpu.yaml` is present.
+
+#### Step 3: Extend the kubelet container-creation timeout
+
+The `kata-cc-nvidia-gpu` runtime uses CDH guest-pull: every container image is downloaded and unpacked from the registry **inside the kata VM** on each pod start. The app image is ~4.6 GB compressed, which takes longer than the kubelet's default 2-minute `runtimeRequestTimeout`. Without this change the pod fails with `RST_STREAM CANCEL` partway through the image pull.
+
+Apply a `KubeletConfig` to extend the timeout to 10 minutes across all worker nodes:
+
+```bash
+oc apply -f helm/osc/templates/kubelet-config.yaml
+```
+
+This triggers a MachineConfig rolling update — worker nodes drain and reboot one at a time. Wait for the pool to settle before proceeding:
+
+```bash
+oc get mcp worker -w   # wait for UPDATED=True, DEGRADED=False
+```
+
+> **Note:** On a single-node cluster apply `helm/osc/templates/kubelet-config-sno.yaml` instead (targets the `master` MCP), and watch `oc get mcp master -w`. The `make setup-kata` target detects the cluster type and applies the correct file automatically.
 
 ---
 
