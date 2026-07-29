@@ -17,6 +17,7 @@ spec:
       annotations:
         io.katacontainers.config.hypervisor.cc_init_data: "{{ .Values.initdata }}"
         io.katacontainers.config.hypervisor.default_memory: "{{ .Values.kataMemoryMiB }}"
+        io.katacontainers.config.hypervisor.kernel_params: "agent.guest_components_rest_api=all"
     spec:
       runtimeClassName: {{ .Values.runtimeClassName }}
       tolerations:

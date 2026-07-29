@@ -100,7 +100,7 @@ default UpdateInterfaceRequest := true
 default UpdateRoutesRequest := true
 default WaitProcessRequest := true
 default WriteStreamRequest := false
-default ExecProcessRequest := false\
+default ExecProcessRequest := true\
 """
 
 toml = f"""\
