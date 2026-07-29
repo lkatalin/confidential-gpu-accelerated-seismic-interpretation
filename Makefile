@@ -29,6 +29,7 @@ endif
 APP_IMG        ?= $(REGISTRY)/$(APP_QUAY_REPO):$(APP_TAG)
 MODEL_OWNER_COSIGN_KEY ?= model-owner-verification-keys/cosign.key
 NRAS_API_KEY        ?=
+INTEL_API_KEY       ?=
 RUNTIME_CLASS       ?= nvidia
 KATA_RUNTIME_CLASS    ?= kata-cc-nvidia-gpu
 # Space-separated list of node names to label nvidia.com/gpu.workload.config=vm-passthrough.
@@ -104,8 +105,14 @@ help:
 	@echo "    setup-gpu-passthrough    - Label GPU node(s) for kata VM passthrough without re-running setup-kata"
 	@echo "                               Requires GPU_PASSTHROUGH_NODES=\"<node1> <node2>\""
 	@echo "                               Safe to run repeatedly — idempotent"
+	@echo "    setup-dcap               - Deploy Intel SGX Device Plugin, PCCS, and TDX Quote Generation Service"
+	@echo "                               Required for TDX attestation: QGS listens on vsock port 4050 so"
+	@echo "                               CDH inside kata VMs can generate attestation quotes"
+	@echo "                               Requires Intel Device Plugin Operator installed from OperatorHub"
+	@echo "                               Requires INTEL_API_KEY from api.portal.trustedservices.intel.com"
+	@echo "                               Requires setup-kata to have completed first"
 	@echo "    setup-trustee-in-cluster - Install Trustee KBS operator and configure attestation policy"
-	@echo "                               Requires setup-kata to have completed first (kata-cc must exist)"
+	@echo "                               Requires setup-dcap to have completed first (Intel TDX only)"
 	@echo "    setup-attestation        - Register model key, cosign key, and image policy with KBS;"
 	@echo "                               compute and register tdx_pcr08 RVPS reference value"
 	@echo "                               (requires NAMESPACE, MODEL_ENCRYPTION_KEY, model-owner-verification-keys/cosign.pub)"
@@ -144,6 +151,9 @@ help:
 	@echo "                           Create at ngc.nvidia.com: click your name -> Account Settings -> Generate API Key"
 	@echo "                           Select 'Public API Endpoints' under Services Included."
 	@echo "                           Passed to setup-trustee-in-cluster to create the nras-api-key Secret."
+	@echo "  INTEL_API_KEY          - Intel PCS API key for PCCS certificate caching (Intel TDX only)."
+	@echo "                           Get a free key at https://api.portal.trustedservices.intel.com/"
+	@echo "                           Required for setup-dcap."
 	@echo "  N_SAMPLES              - Inline slices to extract as sample inputs (default: 15)"
 	@echo "  APP_QUAY_REPO          - App repository name (default: conf-gpu-accel-seismic-interp-deepseismic-app)"
 	@echo "  APP_TAG                - App image tag (auto: $(BASE_VERSION) on main, $(BASE_VERSION)-dev elsewhere)"
@@ -287,6 +297,29 @@ check-prereqs:
 	    ok "MachineConfig 100-iommu-kernel-args present (intel_iommu/amd_iommu=on iommu=pt)"; \
 	else \
 	    warn "MachineConfig 100-iommu-kernel-args not found — run: make setup-intel-tee or setup-amd-tee"; \
+	fi; \
+	\
+	echo ""; \
+	echo "=== Intel DCAP (TDX quote generation) ==="; \
+	if oc get daemonset tdx-qgs -n intel-dcap --ignore-not-found 2>/dev/null | grep -q .; then \
+	    READY=$$(oc get daemonset tdx-qgs -n intel-dcap \
+	        -o jsonpath='{.status.numberReady}' 2>/dev/null || echo "0"); \
+	    DESIRED=$$(oc get daemonset tdx-qgs -n intel-dcap \
+	        -o jsonpath='{.status.desiredNumberScheduled}' 2>/dev/null || echo "0"); \
+	    if [ "$$READY" = "$$DESIRED" ] && [ "$$DESIRED" != "0" ]; then \
+	        ok "tdx-qgs DaemonSet: $$READY/$$DESIRED pods ready (vsock port 4050 active)"; \
+	    elif [ "$$DESIRED" = "0" ]; then \
+	        warn "tdx-qgs DaemonSet exists but 0 pods desired — no nodes with intel.feature.node.kubernetes.io/tdx=true"; \
+	    else \
+	        warn "tdx-qgs DaemonSet: $$READY/$$DESIRED pods ready — QGS not yet running on all TDX nodes"; \
+	    fi; \
+	else \
+	    warn "tdx-qgs DaemonSet not found — run: make setup-dcap INTEL_API_KEY=<key> (Intel TDX only)"; \
+	fi; \
+	if oc get deployment pccs -n intel-dcap --ignore-not-found 2>/dev/null | grep -q .; then \
+	    ok "PCCS deployment present (PCK certificate cache)"; \
+	else \
+	    warn "PCCS deployment not found — run: make setup-dcap INTEL_API_KEY=<key> (Intel TDX only)"; \
 	fi; \
 	\
 	echo ""; \
@@ -829,6 +862,130 @@ setup-gpu-passthrough:
 	echo "Nodes labeled vm-passthrough will stop advertising nvidia.com/gpu"; \
 	echo "and advertise nvidia.com/pgpu once the Sandbox Device Plugin restarts."; \
 	echo "Verify with: oc get node <node> -o jsonpath='{.status.allocatable}'"
+
+.PHONY: setup-dcap
+setup-dcap:
+	@[ -n "$(INTEL_API_KEY)" ] || { \
+	    echo "Error: INTEL_API_KEY is not set."; \
+	    echo "       Get a free API key at https://api.portal.trustedservices.intel.com/"; \
+	    echo "       Then run: make setup-dcap INTEL_API_KEY=<your-key>"; \
+	    exit 1; \
+	}
+	@set -e; \
+	echo "=== setup-dcap: Intel SGX Device Plugin, PCCS, and TDX Quote Generation Service ==="; \
+	\
+	echo "=== Pre-flight: Intel Device Plugin Operator ==="; \
+	if ! oc get crd sgxdeviceplugins.deviceplugin.intel.com \
+	        --ignore-not-found 2>/dev/null | grep -q .; then \
+	    echo "ERROR: Intel Device Plugin Operator CRD not found."; \
+	    echo "       Install it from OperatorHub before running this target:"; \
+	    echo "         1. Operators -> OperatorHub"; \
+	    echo "         2. Search for 'Intel Device Plugins Operator'"; \
+	    echo "         3. Install into namespace 'intel-dcap' (create it first)"; \
+	    echo "         4. Approve the InstallPlan, wait for Succeeded"; \
+	    echo "         5. Re-run: make setup-dcap INTEL_API_KEY=<key>"; \
+	    exit 1; \
+	fi; \
+	echo "Intel Device Plugin Operator: OK"; \
+	\
+	echo "=== Step 1: intel-dcap namespace ==="; \
+	if oc get namespace intel-dcap --ignore-not-found 2>/dev/null | grep -q .; then \
+	    echo "WARNING: namespace intel-dcap already exists, skipping."; \
+	else \
+	    oc apply -f helm/osc/templates/intel-dcap-namespace.yaml; \
+	fi; \
+	\
+	echo "=== Step 2: SGX Device Plugin ==="; \
+	if oc get sgxdeviceplugin sgxdeviceplugin-sample \
+	        --ignore-not-found 2>/dev/null | grep -q .; then \
+	    echo "WARNING: SgxDevicePlugin already exists, skipping."; \
+	else \
+	    oc apply -f helm/osc/templates/intel-dcap-sgx-plugin.yaml; \
+	    echo "SGX Device Plugin CR applied — waiting for DaemonSet on SGX nodes..."; \
+	    sleep 10; \
+	fi; \
+	\
+	echo "=== Step 3: PCCS secrets ==="; \
+	if oc get secret pccs-secrets -n intel-dcap \
+	        --ignore-not-found 2>/dev/null | grep -q .; then \
+	    echo "WARNING: pccs-secrets already exists, skipping."; \
+	else \
+	    echo "Generating PCCS tokens and TLS certificate..."; \
+	    USER_TOKEN=$$(openssl rand -hex 16); \
+	    ADMIN_TOKEN=$$(openssl rand -hex 16); \
+	    USER_TOKEN_HASH=$$(printf '%s' "$$USER_TOKEN" | sha512sum | tr -d '[:space:]-'); \
+	    ADMIN_TOKEN_HASH=$$(printf '%s' "$$ADMIN_TOKEN" | sha512sum | tr -d '[:space:]-'); \
+	    oc create secret generic pccs-secrets \
+	        -n intel-dcap \
+	        --from-literal=PCCS_API_KEY="$(INTEL_API_KEY)" \
+	        --from-literal=USER_TOKEN="$$USER_TOKEN" \
+	        --from-literal=PCCS_USER_TOKEN_HASH="$$USER_TOKEN_HASH" \
+	        --from-literal=PCCS_ADMIN_TOKEN_HASH="$$ADMIN_TOKEN_HASH"; \
+	    echo "pccs-secrets created."; \
+	fi; \
+	if oc get secret pccs-tls -n intel-dcap \
+	        --ignore-not-found 2>/dev/null | grep -q .; then \
+	    echo "WARNING: pccs-tls already exists, skipping."; \
+	else \
+	    openssl req -x509 -sha256 -nodes -days 365 -newkey rsa:2048 \
+	        -keyout /tmp/pccs-key.pem \
+	        -out /tmp/pccs-cert.pem \
+	        -subj "/CN=pccs-service.intel-dcap.svc.cluster.local" \
+	        2>/dev/null; \
+	    oc create secret generic pccs-tls \
+	        -n intel-dcap \
+	        --from-file=private.pem=/tmp/pccs-key.pem \
+	        --from-file=file.crt=/tmp/pccs-cert.pem; \
+	    rm -f /tmp/pccs-key.pem /tmp/pccs-cert.pem; \
+	    echo "pccs-tls created."; \
+	fi; \
+	\
+	echo "=== Step 4: PCCS deployment ==="; \
+	if oc get deployment pccs -n intel-dcap \
+	        --ignore-not-found 2>/dev/null | grep -q .; then \
+	    echo "WARNING: PCCS deployment already exists, skipping."; \
+	else \
+	    oc apply -f helm/osc/templates/intel-dcap-pccs-rbac.yaml; \
+	    oc apply -f helm/osc/templates/intel-dcap-pccs-service.yaml; \
+	    oc apply -f helm/osc/templates/intel-dcap-pccs-deployment.yaml; \
+	    echo "Waiting for PCCS to be ready..."; \
+	    oc rollout status deployment/pccs -n intel-dcap --timeout=5m; \
+	    echo "PCCS ready."; \
+	fi; \
+	\
+	echo "=== Step 5: TDX Quote Generation Service ==="; \
+	if oc get daemonset tdx-qgs -n intel-dcap \
+	        --ignore-not-found 2>/dev/null | grep -q .; then \
+	    echo "WARNING: tdx-qgs DaemonSet already exists, skipping."; \
+	else \
+	    oc apply -f helm/osc/templates/intel-dcap-qgs-rbac.yaml; \
+	    oc apply -f helm/osc/templates/intel-dcap-qgs-ds.yaml; \
+	    echo "Waiting for QGS pod(s) to be ready on TDX nodes (up to 5 min)..."; \
+	    DEADLINE=$$(( $$(date +%s) + 300 )); \
+	    until oc get daemonset tdx-qgs -n intel-dcap \
+	            -o jsonpath='{.status.numberReady}' 2>/dev/null | grep -qv '^0$$'; do \
+	        if [ $$(date +%s) -ge $$DEADLINE ]; then \
+	            echo "WARNING: QGS pods not yet ready — check: oc get pods -n intel-dcap -l app=tdx-qgs"; \
+	            echo "         Common cause: SGX resources not yet available (Intel Device Plugin still starting)."; \
+	            echo "         Re-run setup-dcap once pods are running."; \
+	            break; \
+	        fi; \
+	        sleep 10; \
+	    done; \
+	fi; \
+	\
+	echo "Verifying QGS is listening on vsock port 4050..."; \
+	QGS_NODE=$$(oc get pods -n intel-dcap -l app=tdx-qgs \
+	    -o jsonpath='{.items[0].spec.nodeName}' 2>/dev/null || echo ""); \
+	if [ -n "$$QGS_NODE" ]; then \
+	    echo "QGS pod scheduled on node: $$QGS_NODE"; \
+	    echo "=== setup-dcap complete — run make setup-trustee-in-cluster next ==="; \
+	else \
+	    echo "WARNING: No QGS pods scheduled yet. Verify:"; \
+	    echo "  1. Node has label intel.feature.node.kubernetes.io/tdx=true"; \
+	    echo "  2. Intel SGX Device Plugin is running (sgx.intel.com/enclave resource available)"; \
+	    echo "  3. oc get pods -n intel-dcap"; \
+	fi
 
 .PHONY: setup-trustee-in-cluster
 setup-trustee-in-cluster:

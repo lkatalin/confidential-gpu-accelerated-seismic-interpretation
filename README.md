@@ -23,6 +23,9 @@ AI-powered classification from North Sea seismic data — running with a three-f
   - [Kata containers setup — application deployer (cluster-admin, once per cluster)](#kata-containers-setup--application-deployer-cluster-admin-once-per-cluster)
     - [Step 1: Install Node Feature Discovery](#step-1-install-node-feature-discovery)
     - [Step 2: Install OpenShift Sandboxed Containers](#step-2-install-openshift-sandboxed-containers)
+  - [Intel TDX Quote Generation Service setup — application deployer (cluster-admin, once per cluster, Intel TDX only)](#intel-tdx-quote-generation-service-setup--application-deployer-cluster-admin-once-per-cluster-intel-tdx-only)
+    - [Step 1: Install the Intel Device Plugin Operator](#step-1-install-the-intel-device-plugin-operator)
+    - [Step 2: Deploy PCCS and QGS](#step-2-deploy-pccs-and-qgs)
   - [Trustee setup — model owner (cluster-admin, once per cluster)](#trustee-setup--model-owner-cluster-admin-once-per-cluster)
     - [Step 1: Install the Trustee operator](#step-1-install-the-trustee-operator)
     - [Step 2: Create the kbs-auth-public-key Secret](#step-2-create-the-kbs-auth-public-key-secret)
@@ -264,7 +267,7 @@ Attestation requires outbound HTTPS (port 443) access from the clusters to the f
 
 | From | Destination | Purpose |
 |---|---|---|
-| Workload cluster (Intel TDX only) | `api.trustedservices.intel.com` | Intel PCS — fetches PCK certificates used during TDX quote generation. Not required if a local PCCS is configured. |
+| Workload cluster (Intel TDX only) | `api.trustedservices.intel.com` | Intel PCS — PCCS fetches PCK certificates from here to supply the QGS with material for building TDX attestation quotes. |
 | Trustee cluster (Intel TDX) | `api.trustedservices.intel.com` | Intel PCS — verifies the PCK certificate chain and checks TCB status and CRL during TDX quote verification. |
 | Trustee cluster (AMD SEV-SNP) | `kdsintf.amd.com` | AMD Key Distribution Service (KDS) — fetches the VCEK (Versioned Chip Endorsement Key) certificate used to verify SEV-SNP attestation reports against AMD's root CA. |
 | Trustee cluster | `nras.attestation.nvidia.com` | NVIDIA Remote Attestation Service — verifies GPU attestation reports |
@@ -447,7 +450,7 @@ make check-prereqs
 >
 > PCCS only serves Intel-signed certificates — a compromised PCCS cannot forge trust or produce fake attestation quotes, since all certificates are verified against Intel's root CA. However, a stale or tampered PCCS could serve outdated revocation lists (CRLs) or TCB (Trusted Computing Base) data, which would prevent the system from detecting known vulnerabilities in platform firmware. For this reason, PCCS should run on trusted, well-maintained infrastructure — not on the same untrusted workload cluster — and should be kept updated so that revocation and TCB information stays current.
 >
-> This quickstart does not include instructions for installing or configuring PCCS — the attestation agent will fall back to Intel's online PCS directly if no local PCCS is configured. For production deployments, refer to the [Intel PCCS documentation](https://www.intel.com/content/www/us/en/developer/tools/software-guard-extensions/tdx-attestation.html) for setup instructions. AMD SEV-SNP does not require PCCS.
+> This quickstart deploys PCCS and QGS as part of the [Intel TDX Quote Generation Service setup](#intel-tdx-quote-generation-service-setup--application-deployer-cluster-admin-once-per-cluster-intel-tdx-only) step using Red Hat's supported `osc-pccs` and `osc-tdx-qgs` container images. AMD SEV-SNP does not require PCCS.
 
 ---
 
@@ -767,6 +770,81 @@ oc wait mcp/worker --for=condition=Updated=True --timeout=30m
 ```
 
 > **Note:** On a single-node cluster apply `helm/osc/templates/kubelet-config-sno.yaml` instead (targets the `master` MCP), and run `oc wait mcp/master --for=condition=Updated=True --timeout=30m`. The `make setup-kata` target detects the cluster type and applies the correct file automatically.
+
+---
+
+### Intel TDX Quote Generation Service setup — application deployer (cluster-admin, once per cluster, Intel TDX only)
+
+> **AMD SEV-SNP clusters:** Skip this section entirely. AMD SNP attestation does not use QEMU vsock forwarding or an SGX-based Quoting Enclave — skip directly to [Trustee setup](#trustee-setup--model-owner-cluster-admin-once-per-cluster).
+
+When a pod runs inside a kata TDX VM and needs to attest to Trustee, the CDH (Confidential Data Hub) running inside the VM calls the CPU hardware to produce a TDX attestation quote. Generating that quote requires a **Quote Generation Service (QGS)** running on the host: QEMU forwards the request from the kata VM over vsock port 4050 to the host, where QGS runs an Intel SGX Quoting Enclave to sign the hardware-produced TDX report into a verifiable DCAP quote.
+
+Without QGS listening on vsock port 4050, CDH blocks indefinitely waiting for the quote — the pod hangs at `Waiting for CDH to be ready...` and never contacts Trustee.
+
+QGS also needs a **Provisioning Certificate Caching Service (PCCS)** to fetch the PCK (Platform Certification Key) certificate chain from Intel PCS. PCCS caches those certificates locally so QGS can build a complete DCAP quote chain. Both services use Red Hat's supported container images from `registry.redhat.io/openshift-sandboxed-containers/`.
+
+The QGS pod requests SGX device resources (`sgx.intel.com/enclave`, `sgx.intel.com/provision`) provided by the **Intel SGX Device Plugin**, which requires the **Intel Device Plugin Operator** to be installed first.
+
+**Prerequisites:**
+- `setup-kata` complete (NFD running and `intel.feature.node.kubernetes.io/tdx` label present on the kata node)
+- Intel Device Plugin Operator installed from OperatorHub (Step 1 below)
+- Intel PCS API key — get a free key at [api.portal.trustedservices.intel.com](https://api.portal.trustedservices.intel.com/)
+- Outbound HTTPS from the workload cluster to `api.trustedservices.intel.com` (PCCS fetches PCK certificates from here)
+
+To perform automatically (after Step 1 below is complete):
+
+```bash
+make setup-dcap INTEL_API_KEY=<your-intel-pcs-api-key>
+```
+
+Or follow the manual steps below.
+
+#### Step 1: Install the Intel Device Plugin Operator
+
+The Intel Device Plugin Operator manages the SGX Device Plugin DaemonSet that exposes `sgx.intel.com/enclave` and `sgx.intel.com/provision` resources on SGX-capable nodes. QGS requests these resources so the scheduler places it only on nodes with the correct hardware and device access.
+
+1. Go to **Operators → OperatorHub**
+2. Search for **Intel Device Plugins Operator**
+3. Select it (Intel source)
+4. Click **Install**, set the namespace to `intel-dcap` (create the namespace first if needed), set **Update approval** to **Manual**, click **Install**
+5. Go to **Operators → Installed Operators**, select namespace `intel-dcap`, approve the InstallPlan, wait for status **Succeeded**
+
+Once the operator is installed, `make setup-dcap` will create the `SgxDevicePlugin` CR that tells the operator to deploy the plugin DaemonSet on all nodes labelled `intel.feature.node.kubernetes.io/sgx=true`. Verify the plugin is running after `setup-dcap` completes:
+
+```bash
+oc get pods -n intel-dcap
+# Expect: sgx-plugin-* Running on the TDX/SGX node
+#         pccs-* Running (any node)
+#         tdx-qgs-* Running on the TDX node
+```
+
+#### Step 2: Deploy PCCS and QGS
+
+```bash
+make setup-dcap INTEL_API_KEY=<your-intel-pcs-api-key>
+```
+
+This target (after the operator pre-flight check):
+
+1. Applies the `SgxDevicePlugin` CR — the operator deploys the plugin DaemonSet on SGX nodes
+2. Generates PCCS tokens (random user/admin tokens and a self-signed TLS certificate) and creates `pccs-secrets` and `pccs-tls` in `intel-dcap`
+3. Deploys the PCCS service — on first use PCCS fetches PCK certificates from Intel PCS (`LAZY` mode) and caches them at `/var/cache/pccs/` on the host
+4. Deploys the QGS DaemonSet — one pod per TDX node, listening on vsock port 4050 with `hostNetwork: true`
+
+Verify QGS is listening:
+
+```bash
+# Check QGS pod is Running on the TDX kata node
+oc get pods -n intel-dcap -l app=tdx-qgs -o wide
+
+# Check vsock port 4050 on the node (optional — requires node debug access)
+oc debug node/<kata-node> -- chroot /host ss --vsock -l 2>/dev/null | grep 4050
+```
+
+**Expected outcome:**
+- ✓ `tdx-qgs-*` pod Running on the TDX kata node
+- ✓ `pccs-*` pod Running
+- ✓ `sgx-plugin-*` pod Running on the TDX/SGX node with `sgx.intel.com/enclave` resource available
 
 ---
 
