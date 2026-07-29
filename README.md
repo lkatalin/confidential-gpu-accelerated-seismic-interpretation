@@ -825,6 +825,8 @@ The Intel Device Plugin Operator manages the SGX Device Plugin DaemonSet that ex
 #### Step 2: Deploy PCCS and QGS
 
 ```bash
+INTEL_API_KEY=<your-intel-pcs-api-key>   # primary or secondary key from Step 0
+
 # Create namespace and SGX Device Plugin CR (requires operator from Step 1)
 oc apply -f helm/osc/templates/intel-dcap-namespace.yaml
 oc apply -f helm/osc/templates/intel-dcap-sgx-plugin.yaml
@@ -835,7 +837,7 @@ ADMIN_TOKEN=$(openssl rand -hex 16)
 USER_TOKEN_HASH=$(printf '%s' "$USER_TOKEN" | sha512sum | tr -d '[:space:]-')
 ADMIN_TOKEN_HASH=$(printf '%s' "$ADMIN_TOKEN" | sha512sum | tr -d '[:space:]-')
 oc create secret generic pccs-secrets -n intel-dcap \
-    --from-literal=PCCS_API_KEY="<your-intel-pcs-api-key>" \
+    --from-literal=PCCS_API_KEY="$INTEL_API_KEY" \
     --from-literal=USER_TOKEN="$USER_TOKEN" \
     --from-literal=PCCS_USER_TOKEN_HASH="$USER_TOKEN_HASH" \
     --from-literal=PCCS_ADMIN_TOKEN_HASH="$ADMIN_TOKEN_HASH"
