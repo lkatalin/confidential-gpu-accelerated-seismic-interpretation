@@ -987,12 +987,19 @@ spec:
 5. Click **Create**
 6. Go to **Workloads → Pods**, select namespace `trustee-operator-system`, and wait for `trustee-deployment-*` to show **Running**
 
-#### Step 5: Verify the KBS route
+#### Step 5: Verify the KBS route and set HAProxy timeout
 
 The Trustee operator creates a passthrough TLS Route named `kbs-route` automatically when it processes the TrusteeConfig. Verify it exists and note its hostname — you will need it in Step 7:
 
 ```bash
 oc get route kbs-route -n trustee-operator-system -o jsonpath='{.spec.host}'
+```
+
+Then increase the HAProxy timeout on the route. TDX attestation involves quote generation, PCCS certificate fetching, and quote verification — the full round trip can exceed HAProxy's default 30-second timeout, causing the connection to be cancelled before KBS responds:
+
+```bash
+oc annotate route kbs-route -n trustee-operator-system \
+    haproxy.router.openshift.io/timeout=120s
 ```
 
 #### Step 6: Configure RVPS and resource policy
@@ -1070,11 +1077,10 @@ EOF
 Register the expected `tdx_pcr08` value so the cluster admin cannot tamper with the pod's initdata (KBS URL, image policy URI, namespace) without failing the configuration attestation check.
 
 ```bash
-KBS_ROUTE=$(oc get route kbs-route -n trustee-operator-system -o jsonpath='{.spec.host}')
 NAMESPACE=<your deployment namespace, e.g. seismic-interpretation>
 KBS_CERT=$(oc get secret trustee-tls-cert -n trustee-operator-system \
     -o jsonpath='{.data.tls\.crt}' | base64 -d)
-PCR8=$(echo "$KBS_CERT" | python3 scripts/build-initdata.py "https://$KBS_ROUTE" "$NAMESPACE" --pcr8-only)
+PCR8=$(echo "$KBS_CERT" | python3 scripts/build-initdata.py "https://kbs-service.trustee-operator-system.svc.cluster.local:8080" "$NAMESPACE" --pcr8-only)
 echo "tdx_pcr08: $PCR8"
 
 # Read the current reference values and append this namespace's tdx_pcr08.
@@ -1156,9 +1162,8 @@ oc rollout status deployment/trustee-deployment -n trustee-operator-system --tim
 Or equivalently:
 
 ```bash
-KBS_ROUTE=$(oc get route kbs-route -n trustee-operator-system -o jsonpath='{.spec.host}')
 NAMESPACE=<your deployment namespace, e.g. seismic-interpretation>
-make setup-attestation NAMESPACE=$NAMESPACE KBS_URL=https://$KBS_ROUTE
+make setup-attestation NAMESPACE=$NAMESPACE
 ```
 
 > `make setup-intel-tee` (or `make setup-amd-tee`) runs the hardware prerequisite kernel parameter step. `make setup-kata` runs Part 1 Steps 1–2. `make setup-trustee-in-cluster` runs Trustee setup Steps 1–6 automatically (including Step 2a if `NRAS_API_KEY` is supplied). `make setup-attestation` performs Trustee setup Steps 7 and 8: the RVPS `tdx_pcr08` ConfigMap update followed by the three KBS secret registrations.

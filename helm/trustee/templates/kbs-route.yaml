@@ -1,8 +1,10 @@
 apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
-  name: kbs-service
+  name: kbs-route
   namespace: trustee-operator-system
+  annotations:
+    haproxy.router.openshift.io/timeout: 120s
 spec:
   port:
     targetPort: kbs-port

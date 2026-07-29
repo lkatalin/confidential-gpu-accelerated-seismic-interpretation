@@ -145,7 +145,7 @@ help:
 	@echo "                           Labeled nodes stop advertising nvidia.com/gpu and advertise nvidia.com/pgpu instead."
 	@echo "                           Unlabeled GPU nodes continue serving standard CUDA workloads unchanged."
 	@echo "                           Example: make setup-kata GPU_PASSTHROUGH_NODES=\"worker-0 worker-1\""
-	@echo "  KBS_URL                - KBS route URL for setup-attestation (default: auto-detected from cluster)"
+	@echo "  KBS_URL                - KBS external route URL (default: auto-detected; used for reference only — initdata uses the internal ClusterIP URL to avoid IPv6 routing issues)"
 	@echo "  MODEL_OWNER_COSIGN_KEY - Path to model owner signing key (default: model-owner-verification-keys/cosign.key)"
 	@echo "  NRAS_API_KEY           - NVIDIA NGC personal API key for NRAS GPU attestation."
 	@echo "                           Create at ngc.nvidia.com: click your name -> Account Settings -> Generate API Key"
@@ -512,15 +512,14 @@ model-owner-sign-app-container:
 install:
 	@[ -n "$$NAMESPACE" ] || (echo "Error: NAMESPACE is not set"; exit 1)
 	@set -e; \
-	KBS_ROUTE=$$(oc get route kbs-route -n trustee-operator-system \
-	    -o jsonpath='{.spec.host}' 2>/dev/null); \
-	[ -n "$$KBS_ROUTE" ] || { \
+	oc get route kbs-route -n trustee-operator-system >/dev/null 2>&1 || { \
 	    echo "Error: KBS route not found — run make setup-trustee-in-cluster first"; exit 1; \
 	}; \
-	echo "Building initdata blob (KBS URL: https://$$KBS_ROUTE)..."; \
+	KBS_SVC_URL="https://kbs-service.trustee-operator-system.svc.cluster.local:8080"; \
+	echo "Building initdata blob (KBS URL: $$KBS_SVC_URL)..."; \
 	INITDATA=$$(oc get secret trustee-tls-cert -n trustee-operator-system \
 	    -o jsonpath='{.data.tls\.crt}' | base64 -d \
-	    | python3 scripts/build-initdata.py "https://$$KBS_ROUTE" "$(NAMESPACE)"); \
+	    | python3 scripts/build-initdata.py "$$KBS_SVC_URL" "$(NAMESPACE)"); \
 	helm upgrade --install seismic-app helm/ \
 	    -n $(NAMESPACE) \
 	    --set app.image=$(APP_IMG) \
@@ -1113,7 +1112,7 @@ setup-attestation:
 	@set -e; \
 	KBS_CERT=$$(oc get secret trustee-tls-cert -n trustee-operator-system \
 	    -o jsonpath='{.data.tls\.crt}' | base64 -d); \
-	PCR8=$$(echo "$$KBS_CERT" | python3 scripts/build-initdata.py "$(KBS_URL)" "$(NAMESPACE)" --pcr8-only); \
+	PCR8=$$(echo "$$KBS_CERT" | python3 scripts/build-initdata.py "https://kbs-service.trustee-operator-system.svc.cluster.local:8080" "$(NAMESPACE)" --pcr8-only); \
 	echo "tdx_pcr08: $$PCR8"; \
 	CURRENT_REF=$$(oc get configmap conf-seismic-rvps-reference-values \
 	    -n trustee-operator-system \
