@@ -874,25 +874,30 @@ setup-dcap:
 	@set -e; \
 	echo "=== setup-dcap: Intel SGX Device Plugin, PCCS, and TDX Quote Generation Service ==="; \
 	\
-	echo "=== Pre-flight: Intel Device Plugin Operator ==="; \
-	if ! oc get crd sgxdeviceplugins.deviceplugin.intel.com \
-	        --ignore-not-found 2>/dev/null | grep -q .; then \
-	    echo "ERROR: Intel Device Plugin Operator CRD not found."; \
-	    echo "       Install it from OperatorHub before running this target:"; \
-	    echo "         1. Operators -> OperatorHub"; \
-	    echo "         2. Search for 'Intel Device Plugins Operator'"; \
-	    echo "         3. Install into namespace 'intel-dcap' (create it first)"; \
-	    echo "         4. Approve the InstallPlan, wait for Succeeded"; \
-	    echo "         5. Re-run: make setup-dcap INTEL_API_KEY=<key>"; \
-	    exit 1; \
-	fi; \
-	echo "Intel Device Plugin Operator: OK"; \
-	\
 	echo "=== Step 1: intel-dcap namespace ==="; \
 	if oc get namespace intel-dcap --ignore-not-found 2>/dev/null | grep -q .; then \
 	    echo "WARNING: namespace intel-dcap already exists, skipping."; \
 	else \
 	    oc apply -f helm/osc/templates/intel-dcap-namespace.yaml; \
+	fi; \
+	\
+	echo "=== Step 1a: Intel Device Plugin Operator ==="; \
+	if oc get csv -n intel-dcap 2>/dev/null \
+	        | grep -q "intel-device-plugins-operator.*Succeeded"; then \
+	    echo "WARNING: Intel Device Plugin Operator already installed, skipping."; \
+	else \
+	    echo "Installing Intel Device Plugin Operator..."; \
+	    oc apply -f helm/osc/templates/intel-dcap-dpo-operatorgroup.yaml; \
+	    oc apply -f helm/osc/templates/intel-dcap-dpo-subscription.yaml; \
+	    until oc get installplan -n intel-dcap \
+	            --ignore-not-found 2>/dev/null | grep -q .; do sleep 5; done; \
+	    INSTALL_PLAN=$$(oc get installplan -n intel-dcap \
+	        -o jsonpath='{.items[0].metadata.name}'); \
+	    oc patch installplan $$INSTALL_PLAN -n intel-dcap \
+	        --type merge --patch '{"spec":{"approved":true}}'; \
+	    until oc get csv -n intel-dcap 2>/dev/null \
+	            | grep -q "intel-device-plugins-operator.*Succeeded"; do sleep 10; done; \
+	    echo "Intel Device Plugin Operator ready."; \
 	fi; \
 	\
 	echo "=== Step 2: SGX Device Plugin ==="; \

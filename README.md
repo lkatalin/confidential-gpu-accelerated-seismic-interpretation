@@ -788,10 +788,9 @@ The QGS pod requests SGX device resources (`sgx.intel.com/enclave`, `sgx.intel.c
 **Prerequisites:**
 - `setup-kata` complete (NFD running and `intel.feature.node.kubernetes.io/tdx` label present on the kata node)
 - Intel PCS API key (Step 0 below)
-- Intel Device Plugin Operator installed from OperatorHub (Step 1 below)
 - Outbound HTTPS from the workload cluster to `api.trustedservices.intel.com` (QGS fetches PCK certificates from here)
 
-To perform automatically (after Steps 0 and 1 below are complete):
+To perform automatically (after Step 0 below is complete):
 
 ```bash
 make setup-dcap INTEL_API_KEY=<your-intel-pcs-api-key>
@@ -815,33 +814,49 @@ The key is a 32-character hexadecimal string. Keep it secret — it is passed to
 
 The Intel Device Plugin Operator manages the SGX Device Plugin DaemonSet that exposes `sgx.intel.com/enclave` and `sgx.intel.com/provision` resources on SGX-capable nodes. QGS requests these resources so the scheduler places it only on nodes with the correct hardware and device access.
 
+`make setup-dcap` installs this automatically. To install manually instead:
+
 1. Go to **Operators → OperatorHub**
 2. Search for **Intel Device Plugins Operator**
-3. Select it (Intel source)
-4. Click **Install**, set the namespace to `intel-dcap` (create the namespace first if needed), set **Update approval** to **Manual**, click **Install**
+3. Select it (certified — Intel source)
+4. Click **Install**, set the namespace to `intel-dcap` (create it first if needed), set **Update approval** to **Manual**, click **Install**
 5. Go to **Operators → Installed Operators**, select namespace `intel-dcap`, approve the InstallPlan, wait for status **Succeeded**
-
-Once the operator is installed, `make setup-dcap` will create the `SgxDevicePlugin` CR that tells the operator to deploy the plugin DaemonSet on all nodes labelled `intel.feature.node.kubernetes.io/sgx=true`. Verify the plugin is running after `setup-dcap` completes:
-
-```bash
-oc get pods -n intel-dcap
-# Expect: sgx-plugin-* Running on the TDX/SGX node
-#         pccs-* Running (any node)
-#         tdx-qgs-* Running on the TDX node
-```
 
 #### Step 2: Deploy PCCS and QGS
 
 ```bash
-make setup-dcap INTEL_API_KEY=<your-intel-pcs-api-key>
+# Create namespace and SGX Device Plugin CR (requires operator from Step 1)
+oc apply -f helm/osc/templates/intel-dcap-namespace.yaml
+oc apply -f helm/osc/templates/intel-dcap-sgx-plugin.yaml
+
+# Generate PCCS tokens and TLS certificate
+USER_TOKEN=$(openssl rand -hex 16)
+ADMIN_TOKEN=$(openssl rand -hex 16)
+USER_TOKEN_HASH=$(printf '%s' "$USER_TOKEN" | sha512sum | tr -d '[:space:]-')
+ADMIN_TOKEN_HASH=$(printf '%s' "$ADMIN_TOKEN" | sha512sum | tr -d '[:space:]-')
+oc create secret generic pccs-secrets -n intel-dcap \
+    --from-literal=PCCS_API_KEY="<your-intel-pcs-api-key>" \
+    --from-literal=USER_TOKEN="$USER_TOKEN" \
+    --from-literal=PCCS_USER_TOKEN_HASH="$USER_TOKEN_HASH" \
+    --from-literal=PCCS_ADMIN_TOKEN_HASH="$ADMIN_TOKEN_HASH"
+openssl req -x509 -sha256 -nodes -days 365 -newkey rsa:2048 \
+    -keyout /tmp/pccs-key.pem -out /tmp/pccs-cert.pem \
+    -subj "/CN=pccs-service.intel-dcap.svc.cluster.local"
+oc create secret generic pccs-tls -n intel-dcap \
+    --from-file=private.pem=/tmp/pccs-key.pem \
+    --from-file=file.crt=/tmp/pccs-cert.pem
+rm -f /tmp/pccs-key.pem /tmp/pccs-cert.pem
+
+# Deploy PCCS
+oc apply -f helm/osc/templates/intel-dcap-pccs-rbac.yaml
+oc apply -f helm/osc/templates/intel-dcap-pccs-service.yaml
+oc apply -f helm/osc/templates/intel-dcap-pccs-deployment.yaml
+oc rollout status deployment/pccs -n intel-dcap --timeout=5m
+
+# Deploy QGS
+oc apply -f helm/osc/templates/intel-dcap-qgs-rbac.yaml
+oc apply -f helm/osc/templates/intel-dcap-qgs-ds.yaml
 ```
-
-This target (after the operator pre-flight check):
-
-1. Applies the `SgxDevicePlugin` CR — the operator deploys the plugin DaemonSet on SGX nodes
-2. Generates PCCS tokens (random user/admin tokens and a self-signed TLS certificate) and creates `pccs-secrets` and `pccs-tls` in `intel-dcap`
-3. Deploys the PCCS service — on first use PCCS fetches PCK certificates from Intel PCS (`LAZY` mode) and caches them at `/var/cache/pccs/` on the host
-4. Deploys the QGS DaemonSet — one pod per TDX node, listening on vsock port 4050 with `hostNetwork: true`
 
 Verify QGS is listening:
 
@@ -854,9 +869,10 @@ oc debug node/<kata-node> -- chroot /host ss --vsock -l 2>/dev/null | grep 4050
 ```
 
 **Expected outcome:**
-- ✓ `tdx-qgs-*` pod Running on the TDX kata node
-- ✓ `pccs-*` pod Running
+- ✓ `intel-device-plugins-operator-*` CSV `Succeeded` in `intel-dcap`
 - ✓ `sgx-plugin-*` pod Running on the TDX/SGX node with `sgx.intel.com/enclave` resource available
+- ✓ `pccs-*` pod Running
+- ✓ `tdx-qgs-*` pod Running on the TDX kata node
 
 ---
 
