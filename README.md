@@ -787,17 +787,29 @@ The QGS pod requests SGX device resources (`sgx.intel.com/enclave`, `sgx.intel.c
 
 **Prerequisites:**
 - `setup-kata` complete (NFD running and `intel.feature.node.kubernetes.io/tdx` label present on the kata node)
+- Intel PCS API key (Step 0 below)
 - Intel Device Plugin Operator installed from OperatorHub (Step 1 below)
-- Intel PCS API key — get a free key at [api.portal.trustedservices.intel.com](https://api.portal.trustedservices.intel.com/)
-- Outbound HTTPS from the workload cluster to `api.trustedservices.intel.com` (PCCS fetches PCK certificates from here)
+- Outbound HTTPS from the workload cluster to `api.trustedservices.intel.com` (QGS fetches PCK certificates from here)
 
-To perform automatically (after Step 1 below is complete):
+To perform automatically (after Steps 0 and 1 below are complete):
 
 ```bash
 make setup-dcap INTEL_API_KEY=<your-intel-pcs-api-key>
 ```
 
 Or follow the manual steps below.
+
+#### Step 0: Get an Intel PCS API key
+
+QGS uses the Intel Provisioning Certificate Service (PCS) to fetch the PCK (Platform Certification Key) certificate chain needed to build a verifiable TDX attestation quote. Access to PCS requires a free Intel API subscription key.
+
+1. Go to [api.portal.trustedservices.intel.com](https://api.portal.trustedservices.intel.com/) and sign in with your Intel account (create one if needed — it is free)
+2. Click **Subscribe** on the **Intel SGX Provisioning Certification Service** product
+3. Enter a subscription name, leave the tier as **Free**, and click **Subscribe**
+4. Once subscribed, go to your profile → **Subscriptions** and find the new subscription
+5. Copy either the **Primary Key** or **Secondary Key** — this is your `INTEL_API_KEY`
+
+The key is a 32-character hexadecimal string. Keep it secret — it is passed to `make setup-dcap` and stored in the cluster as a Kubernetes Secret in the `intel-dcap` namespace.
 
 #### Step 1: Install the Intel Device Plugin Operator
 
