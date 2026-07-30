@@ -831,8 +831,8 @@ The Intel Device Plugin Operator manages the SGX Device Plugin DaemonSet that ex
 1. Go to **Operators → OperatorHub**
 2. Search for **Intel TDX DCAP Operator**
 3. Select it (certified — Intel source)
-4. Click **Install**, set the namespace to `intel-dcap`, set the channel to **alpha**, set **Update approval** to **Manual**, click **Install**
-5. Go to **Operators → Installed Operators**, select namespace `intel-dcap`, approve the InstallPlan, wait for status **Succeeded**
+4. Click **Install**, leave the namespace as **All namespaces** (`openshift-operators`), set the channel to **alpha**, set **Update approval** to **Manual**, click **Install**
+5. Go to **Operators → Installed Operators**, select namespace `openshift-operators`, approve the InstallPlan, wait for status **Succeeded**
 6. Create the Intel PCS API key Secret:
    ```bash
    oc create secret generic intel-pcs-api-key -n intel-dcap --from-literal=api-key="$INTEL_API_KEY"
@@ -857,7 +857,7 @@ oc debug node/<kata-node> -- chroot /host ss --vsock -l 2>/dev/null | grep 4050
 
 **Expected outcome:**
 - ✓ `intel-device-plugins-operator-*` CSV `Succeeded` in `intel-dcap`
-- ✓ `intel-tdx-dcap-operator-*` CSV `Succeeded` in `intel-dcap`
+- ✓ `intel-tdx-dcap-operator-*` CSV `Succeeded` in `openshift-operators`
 - ✓ `sgx-plugin-*` pod Running on the TDX/SGX node with `sgx.intel.com/enclave` resource available
 - ✓ `pccs-*` pod Running in `intel-dcap`
 - ✓ `tdx-qgs-*` pod Running in `intel-dcap`

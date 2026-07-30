@@ -920,22 +920,22 @@ setup-dcap:
 	fi; \
 	\
 	echo "=== Step 4: Intel TDX DCAP Operator ==="; \
-	if oc get csv -n intel-dcap 2>/dev/null \
+	if oc get csv -n openshift-operators 2>/dev/null \
 	        | grep -q "intel-tdx-dcap-operator.*Succeeded"; then \
 	    echo "WARNING: Intel TDX DCAP Operator already installed, skipping."; \
 	else \
 	    echo "Installing Intel TDX DCAP Operator..."; \
 	    oc apply -f helm/osc/templates/intel-dcap-tdxqgs-subscription.yaml; \
 	    echo "Waiting for DCAP Operator InstallPlan..."; \
-	    until oc get installplan -n intel-dcap \
+	    until oc get installplan -n openshift-operators \
 	            -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.clusterServiceVersionNames[0]}{"\n"}{end}' \
 	            2>/dev/null | grep -q "intel-tdx-dcap"; do sleep 5; done; \
-	    INSTALL_PLAN=$$(oc get installplan -n intel-dcap \
+	    INSTALL_PLAN=$$(oc get installplan -n openshift-operators \
 	        -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.clusterServiceVersionNames[0]}{"\n"}{end}' \
 	        | grep "intel-tdx-dcap" | awk '{print $$1}'); \
-	    oc patch installplan $$INSTALL_PLAN -n intel-dcap \
+	    oc patch installplan $$INSTALL_PLAN -n openshift-operators \
 	        --type merge --patch '{"spec":{"approved":true}}'; \
-	    until oc get csv -n intel-dcap 2>/dev/null \
+	    until oc get csv -n openshift-operators 2>/dev/null \
 	            | grep -q "intel-tdx-dcap-operator.*Succeeded"; do sleep 10; done; \
 	    echo "Intel TDX DCAP Operator ready."; \
 	fi; \
