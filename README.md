@@ -810,7 +810,7 @@ QGS uses the Intel Provisioning Certificate Service (PCS) to fetch the PCK (Plat
 4. Once subscribed, go to your profile → **Subscriptions** and find the new subscription
 5. Copy either the **Primary Key** or **Secondary Key** — this is your `INTEL_API_KEY`
 
-The key is a 32-character hexadecimal string. Keep it secret — it is passed to `make setup-dcap` and stored in the cluster as a Kubernetes Secret in the `intel-dcap` namespace.
+The key is a 32-character hexadecimal string. Keep it secret — it is passed to `make setup-dcap` and stored in the cluster as a Kubernetes Secret in the `openshift-operators` namespace.
 
 #### Step 1: Install the Intel Device Plugin Operator
 
@@ -831,11 +831,11 @@ The Intel Device Plugin Operator manages the SGX Device Plugin DaemonSet that ex
 1. Go to **Operators → OperatorHub**
 2. Search for **Intel TDX DCAP Operator**
 3. Select it (certified — Intel source)
-4. Click **Install**, set **Installation mode** to **A specific namespace on the cluster**, select `intel-dcap`, set the channel to **alpha**, click **Install**
-5. Go to **Operators → Installed Operators**, select namespace `intel-dcap`, wait for status **Succeeded**
+4. Click **Install**, leave **Installation mode** as **All namespaces on the cluster** (the only supported mode), leave the channel as **alpha**, click **Install**
+5. Go to **Operators → Installed Operators**, select namespace `openshift-operators`, wait for status **Succeeded**
 6. Create the Intel PCS API key Secret in the operator's namespace:
    ```bash
-   oc create secret generic intel-pcs-api-key -n intel-dcap --from-literal=api-key="$INTEL_API_KEY"
+   oc create secret generic intel-pcs-api-key -n openshift-operators --from-literal=api-key="$INTEL_API_KEY"
    ```
 7. Apply the `TdxQuoteGenerationService` CR:
    ```bash
@@ -852,18 +852,18 @@ oc get csv -n intel-dcap | grep intel-device-plugins-operator
 oc get csv -n openshift-operators | grep intel-tdx-dcap-operator
 
 # Check TdxQuoteGenerationService CR was accepted
-oc get tdxquotegenerationservice -n intel-dcap
+oc get tdxquotegenerationservices.trustedservices.intel.com -n openshift-operators
 
 # Check PCCS and QGS pods are Running
-oc get pods -n intel-dcap
+oc get pods -n openshift-operators | grep -E 'pccs|tdx-qgs'
 ```
 
 **Expected outcome:**
 - ✓ `intel-device-plugins-operator-*` CSV `Succeeded` in `intel-dcap`
-- ✓ `intel-tdx-dcap-operator-*` CSV `Succeeded` in `intel-dcap`
-- ✓ `tdxquotegenerationservice` shows `intel-tdx-dcap`
-- ✓ `pccs-*` pod Running in `intel-dcap`
-- ✓ `tdx-qgs-*` pod Running in `intel-dcap`
+- ✓ `intel-tdx-dcap-operator-*` CSV `Succeeded` in `openshift-operators`
+- ✓ `tdxquotegenerationservices.trustedservices.intel.com` shows `intel-tdx-dcap`
+- ✓ `pccs-*` pod Running in `openshift-operators`
+- ✓ `tdx-qgs-*` pod Running in `openshift-operators`
 
 ---
 

@@ -2,7 +2,7 @@ apiVersion: trustedservices.intel.com/v1
 kind: TdxQuoteGenerationService
 metadata:
   name: intel-tdx-dcap
-  namespace: intel-dcap
+  namespace: openshift-operators
 spec:
   platformRegistration:
     Online:

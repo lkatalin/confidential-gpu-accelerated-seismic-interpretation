@@ -909,39 +909,39 @@ setup-dcap:
 	fi; \
 	\
 	echo "=== Step 3: Intel PCS API key Secret ==="; \
-	if oc get secret intel-pcs-api-key -n intel-dcap \
+	if oc get secret intel-pcs-api-key -n openshift-operators \
 	        --ignore-not-found 2>/dev/null | grep -q .; then \
 	    echo "WARNING: intel-pcs-api-key Secret already exists, skipping."; \
 	else \
 	    oc create secret generic intel-pcs-api-key \
-	        -n intel-dcap \
+	        -n openshift-operators \
 	        --from-literal=api-key="$(INTEL_API_KEY)"; \
 	    echo "intel-pcs-api-key Secret created."; \
 	fi; \
 	\
 	echo "=== Step 4: Intel TDX DCAP Operator ==="; \
-	if oc get csv -n intel-dcap 2>/dev/null \
+	if oc get csv -n openshift-operators 2>/dev/null \
 	        | grep -q "intel-tdx-dcap-operator.*Succeeded"; then \
 	    echo "WARNING: Intel TDX DCAP Operator already installed, skipping."; \
 	else \
 	    echo "Installing Intel TDX DCAP Operator..."; \
 	    oc apply -f helm/osc/templates/intel-dcap-tdxqgs-subscription.yaml; \
-	    until oc get csv -n intel-dcap 2>/dev/null \
+	    until oc get csv -n openshift-operators 2>/dev/null \
 	            | grep -q "intel-tdx-dcap-operator.*Succeeded"; do sleep 10; done; \
 	    echo "Intel TDX DCAP Operator ready."; \
 	fi; \
 	\
 	echo "=== Step 5: TdxQuoteGenerationService CR ==="; \
-	if oc get tdxquotegenerationservice intel-tdx-dcap -n intel-dcap \
+	if oc get tdxquotegenerationservice intel-tdx-dcap -n openshift-operators \
 	        --ignore-not-found 2>/dev/null | grep -q .; then \
 	    echo "WARNING: TdxQuoteGenerationService intel-tdx-dcap already exists, skipping."; \
 	else \
 	    oc apply -f helm/osc/templates/intel-dcap-tdxqgs-cr.yaml; \
 	    echo "Waiting for QGS pod(s) to be ready on TDX nodes (up to 5 min)..."; \
 	    DEADLINE=$$(( $$(date +%s) + 300 )); \
-	    until oc get pods -n intel-dcap 2>/dev/null | grep -v Completed | grep -v operator | grep -q Running; do \
+	    until oc get pods -n openshift-operators 2>/dev/null | grep -E 'pccs|tdx-qgs' | grep -q Running; do \
 	        if [ $$(date +%s) -ge $$DEADLINE ]; then \
-	            echo "WARNING: QGS pods not yet ready — check: oc get pods -n intel-dcap"; \
+	            echo "WARNING: QGS pods not yet ready — check: oc get pods -n openshift-operators | grep -E 'pccs|tdx-qgs'"; \
 	            echo "         Common cause: SGX resources not yet available (Intel Device Plugin still starting)."; \
 	            echo "         Re-run setup-dcap once pods are running."; \
 	            break; \
@@ -951,8 +951,8 @@ setup-dcap:
 	fi; \
 	\
 	echo "DCAP stack status:"; \
-	oc get pods -n intel-dcap; \
-	oc get tdxquotegenerationservice -n intel-dcap --ignore-not-found 2>/dev/null || true; \
+	oc get pods -n openshift-operators | grep -E 'pccs|tdx-qgs' || echo "(no pccs/tdx-qgs pods yet)"; \
+	oc get tdxquotegenerationservice -n openshift-operators --ignore-not-found 2>/dev/null || true; \
 	echo "=== setup-dcap complete — run make setup-trustee-in-cluster next ==="
 
 .PHONY: setup-trustee-in-cluster
