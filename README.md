@@ -826,6 +826,24 @@ The Intel Device Plugin Operator manages the SGX Device Plugin DaemonSet that ex
 
 #### Step 2: Install the Intel TDX DCAP Operator and deploy QGS
 
+`make setup-dcap` installs this automatically. To install manually instead:
+
+1. Go to **Operators → OperatorHub**
+2. Search for **Intel TDX DCAP Operator**
+3. Select it (certified — Intel source)
+4. Click **Install**, set the namespace to `intel-dcap`, set the channel to **alpha**, set **Update approval** to **Manual**, click **Install**
+5. Go to **Operators → Installed Operators**, select namespace `intel-dcap`, approve the InstallPlan, wait for status **Succeeded**
+6. Create the Intel PCS API key Secret:
+   ```bash
+   oc create secret generic intel-pcs-api-key -n intel-dcap --from-literal=api-key="$INTEL_API_KEY"
+   ```
+7. Apply the `TdxQuoteGenerationService` CR:
+   ```bash
+   oc apply -f helm/osc/templates/intel-dcap-tdxqgs-cr.yaml
+   ```
+
+Or perform all of Step 2 via CLI:
+
 ```bash
 INTEL_API_KEY=<your-intel-pcs-api-key>   # primary or secondary key from Step 0
 
