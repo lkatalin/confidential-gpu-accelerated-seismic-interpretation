@@ -833,9 +833,9 @@ The Intel Device Plugin Operator manages the SGX Device Plugin DaemonSet that ex
 3. Select it (certified — Intel source)
 4. Click **Install**, leave **Installation mode** as **All namespaces on the cluster** (the only supported mode), leave the channel as **alpha**, click **Install**
 5. Go to **Operators → Installed Operators**, select namespace `openshift-operators`, wait for status **Succeeded**
-6. Grant the `anyuid` SCC to the operator's service account (required — the operator runs as UID 65534 which is outside the default allowed range):
+6. **TODO** validate this as not found in Intel documentation -  Grant the `privileged` SCC to the operator's service account (required — the operator runs as UID 65534 and uses deprecated seccomp annotations that only the `privileged` SCC allows):
    ```bash
-   oc adm policy add-scc-to-user anyuid -z intel-tdx-dcap -n openshift-operators
+   oc adm policy add-scc-to-user privileged -z intel-tdx-dcap -n openshift-operators
    ```
 7. Create the Intel PCS API key Secret in the operator's namespace:
    ```bash
@@ -858,16 +858,15 @@ oc get csv -n openshift-operators | grep intel-tdx-dcap-operator
 # Check TdxQuoteGenerationService CR was accepted
 oc get tdxquotegenerationservices.trustedservices.intel.com -n openshift-operators
 
-# Check PCCS and QGS pods are Running
-oc get pods -n openshift-operators | grep -E 'pccs|tdx-qgs'
+# Check QGS pod (includes PCCS sidecar) is Running
+oc get pods -n openshift-operators | grep intel-tdx-dcap-qgs
 ```
 
 **Expected outcome:**
 - ✓ `intel-device-plugins-operator-*` CSV `Succeeded` in `intel-dcap`
 - ✓ `intel-tdx-dcap-operator-*` CSV `Succeeded` in `openshift-operators`
-- ✓ `tdxquotegenerationservices.trustedservices.intel.com` shows `intel-tdx-dcap`
-- ✓ `pccs-*` pod Running in `openshift-operators`
-- ✓ `tdx-qgs-*` pod Running in `openshift-operators`
+- ✓ `tdxquotegenerationservices.trustedservices.intel.com` shows `intel-tdx-dcap` with `READY: True`
+- ✓ `intel-tdx-dcap-qgs-*` pod `2/2 Running` in `openshift-operators` (QGS and PCCS run as sidecars in the same pod)
 
 ---
 

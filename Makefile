@@ -932,7 +932,7 @@ setup-dcap:
 	fi; \
 	\
 	echo "=== Step 4a: SCC for intel-tdx-dcap service account ==="; \
-	oc adm policy add-scc-to-user anyuid -z intel-tdx-dcap -n openshift-operators; \
+	oc adm policy add-scc-to-user privileged -z intel-tdx-dcap -n openshift-operators; \
 	\
 	echo "=== Step 5: TdxQuoteGenerationService CR ==="; \
 	if oc get tdxquotegenerationservice intel-tdx-dcap -n openshift-operators \
@@ -942,9 +942,9 @@ setup-dcap:
 	    oc apply -f helm/osc/templates/intel-dcap-tdxqgs-cr.yaml; \
 	    echo "Waiting for QGS pod(s) to be ready on TDX nodes (up to 5 min)..."; \
 	    DEADLINE=$$(( $$(date +%s) + 300 )); \
-	    until oc get pods -n openshift-operators 2>/dev/null | grep -E 'pccs|tdx-qgs' | grep -q Running; do \
+	    until oc get pods -n openshift-operators 2>/dev/null | grep intel-tdx-dcap-qgs | grep -q Running; do \
 	        if [ $$(date +%s) -ge $$DEADLINE ]; then \
-	            echo "WARNING: QGS pods not yet ready — check: oc get pods -n openshift-operators | grep -E 'pccs|tdx-qgs'"; \
+	            echo "WARNING: QGS pod not yet ready — check: oc get pods -n openshift-operators | grep intel-tdx-dcap-qgs"; \
 	            echo "         Common cause: SGX resources not yet available (Intel Device Plugin still starting)."; \
 	            echo "         Re-run setup-dcap once pods are running."; \
 	            break; \
@@ -954,7 +954,7 @@ setup-dcap:
 	fi; \
 	\
 	echo "DCAP stack status:"; \
-	oc get pods -n openshift-operators | grep -E 'pccs|tdx-qgs' || echo "(no pccs/tdx-qgs pods yet)"; \
+	oc get pods -n openshift-operators | grep intel-tdx-dcap-qgs || echo "(no intel-tdx-dcap-qgs pod yet)"; \
 	oc get tdxquotegenerationservice -n openshift-operators --ignore-not-found 2>/dev/null || true; \
 	echo "=== setup-dcap complete — run make setup-trustee-in-cluster next ==="
 
