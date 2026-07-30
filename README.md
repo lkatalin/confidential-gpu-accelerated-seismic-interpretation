@@ -828,20 +828,24 @@ The Intel Device Plugin Operator manages the SGX Device Plugin DaemonSet that ex
 
 `make setup-dcap` installs this automatically. To install manually instead:
 
-1. Go to **Operators → OperatorHub**
-2. Search for **Intel TDX DCAP Operator**
-3. Select it (certified — Intel source)
-4. Click **Install**, leave **Installation mode** as **All namespaces on the cluster** (the only supported mode), leave the channel as **alpha**, click **Install**
-5. Go to **Operators → Installed Operators**, select namespace `intel-dcap`, wait for status **Succeeded**
-6. **TODO** validate this as not found in Intel documentation -  Grant the `privileged` SCC to the operator's service account (required — the operator runs as UID 65534 and uses deprecated seccomp annotations that only the `privileged` SCC allows):
+1. Create the `intel-dcap` namespace if it does not already exist:
+   ```bash
+   oc get namespace intel-dcap || oc create namespace intel-dcap
+   ```
+2. Go to **Operators → OperatorHub**
+3. Search for **Intel TDX DCAP Operator**
+4. Select it (certified — Intel source)
+5. Click **Install**, leave **Installation mode** as **All namespaces on the cluster** (the only supported mode), set **Installed Namespace** to `intel-dcap`, leave the channel as **alpha**, click **Install**
+6. Go to **Operators → Installed Operators**, select namespace `intel-dcap`, wait for status **Succeeded**
+7. **TODO** validate this as not found in Intel documentation -  Grant the `privileged` SCC to the operator's service account (required — the operator runs as UID 65534 and uses deprecated seccomp annotations that only the `privileged` SCC allows):
    ```bash
    oc adm policy add-scc-to-user privileged -z intel-tdx-dcap -n intel-dcap
    ```
-7. Create the Intel PCS API key Secret in the operator's namespace:
+8. Create the Intel PCS API key Secret in the operator's namespace:
    ```bash
    oc create secret generic intel-pcs-api-key -n intel-dcap --from-literal=api-key="$INTEL_API_KEY"
    ```
-8. Apply the `TdxQuoteGenerationService` CR:
+9. Apply the `TdxQuoteGenerationService` CR:
    ```bash
    oc apply -f helm/osc/templates/intel-dcap-tdxqgs-cr.yaml
    ```
