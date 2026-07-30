@@ -931,6 +931,9 @@ setup-dcap:
 	    echo "Intel TDX DCAP Operator ready."; \
 	fi; \
 	\
+	echo "=== Step 4a: SCC for intel-tdx-dcap service account ==="; \
+	oc adm policy add-scc-to-user anyuid -z intel-tdx-dcap -n openshift-operators; \
+	\
 	echo "=== Step 5: TdxQuoteGenerationService CR ==="; \
 	if oc get tdxquotegenerationservice intel-tdx-dcap -n openshift-operators \
 	        --ignore-not-found 2>/dev/null | grep -q .; then \

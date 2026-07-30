@@ -833,11 +833,15 @@ The Intel Device Plugin Operator manages the SGX Device Plugin DaemonSet that ex
 3. Select it (certified — Intel source)
 4. Click **Install**, leave **Installation mode** as **All namespaces on the cluster** (the only supported mode), leave the channel as **alpha**, click **Install**
 5. Go to **Operators → Installed Operators**, select namespace `openshift-operators`, wait for status **Succeeded**
-6. Create the Intel PCS API key Secret in the operator's namespace:
+6. Grant the `anyuid` SCC to the operator's service account (required — the operator runs as UID 65534 which is outside the default allowed range):
+   ```bash
+   oc adm policy add-scc-to-user anyuid -z intel-tdx-dcap -n openshift-operators
+   ```
+7. Create the Intel PCS API key Secret in the operator's namespace:
    ```bash
    oc create secret generic intel-pcs-api-key -n openshift-operators --from-literal=api-key="$INTEL_API_KEY"
    ```
-7. Apply the `TdxQuoteGenerationService` CR:
+8. Apply the `TdxQuoteGenerationService` CR:
    ```bash
    oc apply -f helm/osc/templates/intel-dcap-tdxqgs-cr.yaml
    ```
