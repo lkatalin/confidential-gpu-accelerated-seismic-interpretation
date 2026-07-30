@@ -187,7 +187,7 @@ check-prereqs:
 	\
 	OCP_VERSION=$$(oc get clusterversion version \
 	    -o jsonpath='{.status.desired.version}' 2>/dev/null || echo "unknown"); \
-	REQUIRED="4.21.9"; \
+	REQUIRED="4.21.24"; \
 	if [ "$$OCP_VERSION" = "unknown" ]; then \
 	    fail "Could not determine OpenShift version"; \
 	else \
@@ -197,7 +197,7 @@ check-prereqs:
 	    elif [ "$$OCP_VERSION" = "$$REQUIRED" ]; then \
 	        ok "OpenShift version $$OCP_VERSION == $$REQUIRED"; \
 	    else \
-	        fail "OpenShift version $$OCP_VERSION < $$REQUIRED (required for OSC 1.12 confidential containers)"; \
+	        fail "OpenShift version $$OCP_VERSION < $$REQUIRED (required for OSC 1.13 confidential containers with GPU)"; \
 	    fi; \
 	fi; \
 	\
@@ -909,42 +909,42 @@ setup-dcap:
 	fi; \
 	\
 	echo "=== Step 3: Intel PCS API key Secret ==="; \
-	if oc get secret intel-pcs-api-key -n openshift-operators \
+	if oc get secret intel-pcs-api-key -n intel-dcap \
 	        --ignore-not-found 2>/dev/null | grep -q .; then \
 	    echo "WARNING: intel-pcs-api-key Secret already exists, skipping."; \
 	else \
 	    oc create secret generic intel-pcs-api-key \
-	        -n openshift-operators \
+	        -n intel-dcap \
 	        --from-literal=api-key="$(INTEL_API_KEY)"; \
 	    echo "intel-pcs-api-key Secret created."; \
 	fi; \
 	\
 	echo "=== Step 4: Intel TDX DCAP Operator ==="; \
-	if oc get csv -n openshift-operators 2>/dev/null \
+	if oc get csv -n intel-dcap 2>/dev/null \
 	        | grep -q "intel-tdx-dcap-operator.*Succeeded"; then \
 	    echo "WARNING: Intel TDX DCAP Operator already installed, skipping."; \
 	else \
 	    echo "Installing Intel TDX DCAP Operator..."; \
 	    oc apply -f helm/osc/templates/intel-dcap-tdxqgs-subscription.yaml; \
-	    until oc get csv -n openshift-operators 2>/dev/null \
+	    until oc get csv -n intel-dcap 2>/dev/null \
 	            | grep -q "intel-tdx-dcap-operator.*Succeeded"; do sleep 10; done; \
 	    echo "Intel TDX DCAP Operator ready."; \
 	fi; \
 	\
 	echo "=== Step 4a: SCC for intel-tdx-dcap service account ==="; \
-	oc adm policy add-scc-to-user privileged -z intel-tdx-dcap -n openshift-operators; \
+	oc adm policy add-scc-to-user privileged -z intel-tdx-dcap -n intel-dcap; \
 	\
 	echo "=== Step 5: TdxQuoteGenerationService CR ==="; \
-	if oc get tdxquotegenerationservice intel-tdx-dcap -n openshift-operators \
+	if oc get tdxquotegenerationservice intel-tdx-dcap -n intel-dcap \
 	        --ignore-not-found 2>/dev/null | grep -q .; then \
 	    echo "WARNING: TdxQuoteGenerationService intel-tdx-dcap already exists, skipping."; \
 	else \
 	    oc apply -f helm/osc/templates/intel-dcap-tdxqgs-cr.yaml; \
 	    echo "Waiting for QGS pod(s) to be ready on TDX nodes (up to 5 min)..."; \
 	    DEADLINE=$$(( $$(date +%s) + 300 )); \
-	    until oc get pods -n openshift-operators 2>/dev/null | grep intel-tdx-dcap-qgs | grep -q Running; do \
+	    until oc get pods -n intel-dcap 2>/dev/null | grep intel-tdx-dcap-qgs | grep -q Running; do \
 	        if [ $$(date +%s) -ge $$DEADLINE ]; then \
-	            echo "WARNING: QGS pod not yet ready — check: oc get pods -n openshift-operators | grep intel-tdx-dcap-qgs"; \
+	            echo "WARNING: QGS pod not yet ready — check: oc get pods -n intel-dcap | grep intel-tdx-dcap-qgs"; \
 	            echo "         Common cause: SGX resources not yet available (Intel Device Plugin still starting)."; \
 	            echo "         Re-run setup-dcap once pods are running."; \
 	            break; \
@@ -954,8 +954,8 @@ setup-dcap:
 	fi; \
 	\
 	echo "DCAP stack status:"; \
-	oc get pods -n openshift-operators | grep intel-tdx-dcap-qgs || echo "(no intel-tdx-dcap-qgs pod yet)"; \
-	oc get tdxquotegenerationservice -n openshift-operators --ignore-not-found 2>/dev/null || true; \
+	oc get pods -n intel-dcap | grep intel-tdx-dcap-qgs || echo "(no intel-tdx-dcap-qgs pod yet)"; \
+	oc get tdxquotegenerationservice -n intel-dcap --ignore-not-found 2>/dev/null || true; \
 	echo "=== setup-dcap complete — run make setup-trustee-in-cluster next ==="
 
 .PHONY: setup-trustee-in-cluster

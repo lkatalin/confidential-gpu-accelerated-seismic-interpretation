@@ -256,7 +256,7 @@ flowchart LR
 
 | Software | Version | Notes |
 |---|---|---|
-| OpenShift Container Platform | 4.21.9+ | Required by OpenShift Sandboxed Containers 1.12 with confidential containers support |
+| OpenShift Container Platform | 4.21.24+ | Required by OpenShift Sandboxed Containers 1.13 with confidential containers and GPU support (bare metal + GPU requires 4.21.24+) |
 | Red Hat OpenShift AI | 3.4+ | Provides the model serving stack and manages the NVIDIA GPU Operator and CUDA runtime — install via OperatorHub |
 | Trustee (KBS) | 1.1.0 | `confidential-containers/trustee` — Key Broker Server, deployed as part of this quickstart |
 | Cosign | 2.0+ | For verifying model image signatures; installed locally for the optional encrypt step |
@@ -810,7 +810,7 @@ QGS uses the Intel Provisioning Certificate Service (PCS) to fetch the PCK (Plat
 4. Once subscribed, go to your profile → **Subscriptions** and find the new subscription
 5. Copy either the **Primary Key** or **Secondary Key** — this is your `INTEL_API_KEY`
 
-The key is a 32-character hexadecimal string. Keep it secret — it is passed to `make setup-dcap` and stored in the cluster as a Kubernetes Secret in the `openshift-operators` namespace.
+The key is a 32-character hexadecimal string. Keep it secret — it is passed to `make setup-dcap` and stored in the cluster as a Kubernetes Secret in the `intel-dcap` namespace.
 
 #### Step 1: Install the Intel Device Plugin Operator
 
@@ -832,14 +832,14 @@ The Intel Device Plugin Operator manages the SGX Device Plugin DaemonSet that ex
 2. Search for **Intel TDX DCAP Operator**
 3. Select it (certified — Intel source)
 4. Click **Install**, leave **Installation mode** as **All namespaces on the cluster** (the only supported mode), leave the channel as **alpha**, click **Install**
-5. Go to **Operators → Installed Operators**, select namespace `openshift-operators`, wait for status **Succeeded**
+5. Go to **Operators → Installed Operators**, select namespace `intel-dcap`, wait for status **Succeeded**
 6. **TODO** validate this as not found in Intel documentation -  Grant the `privileged` SCC to the operator's service account (required — the operator runs as UID 65534 and uses deprecated seccomp annotations that only the `privileged` SCC allows):
    ```bash
-   oc adm policy add-scc-to-user privileged -z intel-tdx-dcap -n openshift-operators
+   oc adm policy add-scc-to-user privileged -z intel-tdx-dcap -n intel-dcap
    ```
 7. Create the Intel PCS API key Secret in the operator's namespace:
    ```bash
-   oc create secret generic intel-pcs-api-key -n openshift-operators --from-literal=api-key="$INTEL_API_KEY"
+   oc create secret generic intel-pcs-api-key -n intel-dcap --from-literal=api-key="$INTEL_API_KEY"
    ```
 8. Apply the `TdxQuoteGenerationService` CR:
    ```bash
@@ -853,20 +853,20 @@ Verify the DCAP stack:
 oc get csv -n intel-dcap | grep intel-device-plugins-operator
 
 # Check Intel TDX DCAP Operator is installed
-oc get csv -n openshift-operators | grep intel-tdx-dcap-operator
+oc get csv -n intel-dcap | grep intel-tdx-dcap-operator
 
 # Check TdxQuoteGenerationService CR was accepted
-oc get tdxquotegenerationservices.trustedservices.intel.com -n openshift-operators
+oc get tdxquotegenerationservices.trustedservices.intel.com -n intel-dcap
 
 # Check QGS pod (includes PCCS sidecar) is Running
-oc get pods -n openshift-operators | grep intel-tdx-dcap-qgs
+oc get pods -n intel-dcap | grep intel-tdx-dcap-qgs
 ```
 
 **Expected outcome:**
 - ✓ `intel-device-plugins-operator-*` CSV `Succeeded` in `intel-dcap`
-- ✓ `intel-tdx-dcap-operator-*` CSV `Succeeded` in `openshift-operators`
+- ✓ `intel-tdx-dcap-operator-*` CSV `Succeeded` in `intel-dcap`
 - ✓ `tdxquotegenerationservices.trustedservices.intel.com` shows `intel-tdx-dcap` with `READY: True`
-- ✓ `intel-tdx-dcap-qgs-*` pod `2/2 Running` in `openshift-operators` (QGS and PCCS run as sidecars in the same pod)
+- ✓ `intel-tdx-dcap-qgs-*` pod `2/2 Running` in `intel-dcap` (QGS and PCCS run as sidecars in the same pod)
 
 ---
 
