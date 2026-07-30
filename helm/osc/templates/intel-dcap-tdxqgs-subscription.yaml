@@ -8,5 +8,4 @@ spec:
   name: intel-tdx-dcap-operator
   source: certified-operators
   sourceNamespace: openshift-marketplace
-  installPlanApproval: Manual
-  startingCSV: intel-tdx-dcap-operator.v0.1.0
+  installPlanApproval: Automatic
