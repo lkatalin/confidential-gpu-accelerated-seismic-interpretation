@@ -257,7 +257,7 @@ flowchart LR
 | Software | Version | Notes |
 |---|---|---|
 | OpenShift Container Platform | 4.21.24+ | Required by OpenShift Sandboxed Containers 1.13 with confidential containers and GPU support (bare metal + GPU requires 4.21.24+) |
-| Red Hat OpenShift AI | 3.4+ | Provides the model serving stack and manages the NVIDIA GPU Operator and CUDA runtime — install via OperatorHub |
+| Red Hat OpenShift AI | 3.4+ | Provides the model serving stack and installs the NVIDIA GPU Operator (26.3.0 required for confidential GPU support with OSC 1.13) and CUDA runtime — install via OperatorHub |
 | Trustee (KBS) | 1.1.0 | `confidential-containers/trustee` — Key Broker Server, deployed as part of this quickstart |
 | Cosign | 2.0+ | For verifying model image signatures; installed locally for the optional encrypt step |
 
@@ -785,13 +785,13 @@ oc wait mcp/worker --for=condition=Updated=True --timeout=30m
 
 ### Intel TDX Quote Generation Service setup — application deployer (cluster-admin, once per cluster, Intel TDX only)
 
-> **AMD SEV-SNP clusters:** Skip this section entirely. AMD SNP attestation does not use QEMU vsock forwarding or an SGX-based Quoting Enclave — skip directly to [Trustee setup](#trustee-setup--model-owner-cluster-admin-once-per-cluster).
+> **AMD SEV-SNP clusters:** Skip this section entirely. AMD SNP attestation does not use an SGX-based Quoting Enclave — skip directly to [Trustee setup](#trustee-setup--model-owner-cluster-admin-once-per-cluster).
 
-When a pod runs inside a kata TDX VM and needs to attest to Trustee, the CDH (Confidential Data Hub) running inside the VM calls the CPU hardware to produce a TDX attestation quote. Generating that quote requires a **Quote Generation Service (QGS)** running on the host: QEMU forwards the request from the kata VM over vsock port 4050 to the host, where QGS runs an Intel SGX Quoting Enclave to sign the hardware-produced TDX report into a verifiable DCAP quote.
-
-Without QGS listening on vsock port 4050, CDH blocks indefinitely waiting for the quote — the pod hangs at `Waiting for CDH to be ready...` and never contacts Trustee.
+When a pod runs inside a kata TDX VM and needs to attest to Trustee, the CDH (Confidential Data Hub) running inside the VM calls the CPU hardware to produce a TDX attestation quote. Generating that quote requires a **Quote Generation Service (QGS)** running on the host. In OSC 1.13, quote generation is **kernel-mediated**: the host kernel's TDX driver connects to QGS via a unix socket (`/var/run/tdx-qgs/qgs.socket`), and QGS runs an Intel SGX Quoting Enclave to sign the hardware TDX report into a verifiable DCAP quote. The `tdx_quote_generation_service_socket_port = 0` setting in the kata TDX configuration (applied by the `99-enable-intel-tdx` MachineConfig) enables this path — QEMU is not involved in quote generation.
 
 QGS also needs a **Provisioning Certificate Caching Service (PCCS)** to fetch the PCK (Platform Certification Key) certificate chain from Intel PCS. PCCS caches those certificates locally so QGS can build a complete DCAP quote chain.
+
+> **Upgrading from OSC 1.12:** If you previously deployed Intel TDX remote attestation using OSC 1.12, attestation will not work with OSC 1.13 without a full reinstall. You must uninstall the existing DCAP deployment and **toggle Intel SGX Factory Reset in the BIOS** before reinstalling the Intel TDX DCAP Operator per the steps below. The BIOS reset clears stale platform provisioning state that prevents the new QGS from registering correctly with Intel PCS.
 
 Both QGS and PCCS are deployed and managed by the **Intel TDX DCAP Operator** (`intel-tdx-dcap-operator` from the Red Hat Certified catalog). The operator takes a `TdxQuoteGenerationService` CR and handles pod lifecycle, SCC configuration, and certificate setup automatically.
 
