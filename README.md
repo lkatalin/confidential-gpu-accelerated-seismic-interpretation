@@ -842,40 +842,6 @@ The Intel Device Plugin Operator manages the SGX Device Plugin DaemonSet that ex
    oc apply -f helm/osc/templates/intel-dcap-tdxqgs-cr.yaml
    ```
 
-Or perform all of Step 2 via CLI:
-
-```bash
-INTEL_API_KEY=<your-intel-pcs-api-key>   # primary or secondary key from Step 0
-
-# Create namespace and SGX Device Plugin CR (requires operator from Step 1)
-oc apply -f helm/osc/templates/intel-dcap-namespace.yaml
-oc apply -f helm/osc/templates/intel-dcap-sgx-plugin.yaml
-
-# Create the Intel PCS API key Secret (referenced by the TdxQuoteGenerationService CR)
-oc create secret generic intel-pcs-api-key \
-    -n intel-dcap \
-    --from-literal=api-key="$INTEL_API_KEY"
-
-# Install the Intel TDX DCAP Operator
-oc apply -f helm/osc/templates/intel-dcap-tdxqgs-subscription.yaml
-
-# Approve the InstallPlan (installPlanApproval: Manual)
-until oc get installplan -n intel-dcap \
-        -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.clusterServiceVersionNames[0]}{"\n"}{end}' \
-        | grep -q "intel-tdx-dcap"; do sleep 5; done
-INSTALL_PLAN=$(oc get installplan -n intel-dcap \
-    -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.clusterServiceVersionNames[0]}{"\n"}{end}' \
-    | grep "intel-tdx-dcap" | awk '{print $1}')
-oc patch installplan "$INSTALL_PLAN" -n intel-dcap \
-    --type merge --patch '{"spec":{"approved":true}}'
-
-# Wait for operator to reach Succeeded
-until oc get csv -n intel-dcap | grep -q "intel-tdx-dcap-operator.*Succeeded"; do sleep 10; done
-
-# Apply the TdxQuoteGenerationService CR (deploys QGS + PCCS via the operator)
-oc apply -f helm/osc/templates/intel-dcap-tdxqgs-cr.yaml
-```
-
 Verify the DCAP stack:
 
 ```bash
@@ -893,8 +859,9 @@ oc debug node/<kata-node> -- chroot /host ss --vsock -l 2>/dev/null | grep 4050
 - ✓ `intel-device-plugins-operator-*` CSV `Succeeded` in `intel-dcap`
 - ✓ `intel-tdx-dcap-operator-*` CSV `Succeeded` in `intel-dcap`
 - ✓ `sgx-plugin-*` pod Running on the TDX/SGX node with `sgx.intel.com/enclave` resource available
-- ✓ QGS pod Running on the TDX kata node (operator-managed; check `oc get pods -n intel-dcap`)
-- ✓ `oc get tdxquotegenerationservice -n intel-dcap` shows `intel-tdx-dcap`
+- ✓ `pccs-*` pod Running in `intel-dcap`
+- ✓ `tdx-qgs-*` pod Running in `intel-dcap`
+- ✓ `oc get TdxQuoteGenerationService` shows `intel-tdx-dcap`
 
 ---
 
