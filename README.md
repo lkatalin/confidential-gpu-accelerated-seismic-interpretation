@@ -845,23 +845,25 @@ The Intel Device Plugin Operator manages the SGX Device Plugin DaemonSet that ex
 Verify the DCAP stack:
 
 ```bash
-# Check all pods in intel-dcap are Running
-oc get pods -n intel-dcap
+# Check Intel Device Plugin Operator is installed
+oc get csv -n intel-dcap | grep intel-device-plugins-operator
+
+# Check Intel TDX DCAP Operator is installed
+oc get csv -n openshift-operators | grep intel-tdx-dcap-operator
 
 # Check TdxQuoteGenerationService CR was accepted
-oc get tdxquotegenerationservice -n intel-dcap
+oc get TdxQuoteGenerationService -n intel-dcap
 
-# Check vsock port 4050 on the node (optional — requires node debug access)
-oc debug node/<kata-node> -- chroot /host ss --vsock -l 2>/dev/null | grep 4050
+# Check PCCS and QGS pods are Running
+oc get pods -n intel-dcap
 ```
 
 **Expected outcome:**
 - ✓ `intel-device-plugins-operator-*` CSV `Succeeded` in `intel-dcap`
 - ✓ `intel-tdx-dcap-operator-*` CSV `Succeeded` in `openshift-operators`
-- ✓ `sgx-plugin-*` pod Running on the TDX/SGX node with `sgx.intel.com/enclave` resource available
+- ✓ `TdxQuoteGenerationService` shows `intel-tdx-dcap`
 - ✓ `pccs-*` pod Running in `intel-dcap`
 - ✓ `tdx-qgs-*` pod Running in `intel-dcap`
-- ✓ `oc get TdxQuoteGenerationService` shows `intel-tdx-dcap`
 
 ---
 
