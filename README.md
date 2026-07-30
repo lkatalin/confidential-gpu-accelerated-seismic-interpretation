@@ -392,11 +392,21 @@ spec:
           mode: 0644
           contents:
             source: "data:,vsock-loopback%0A"
+        - path: /etc/kata-containers/kata-tdx/config.d/96-kata-kernel-config
+          mode: 0644
+          contents:
+            source: "data:text/plain;charset=utf-8;base64,W2h5cGVydmlzb3JdCnRkeF9xdW90ZV9nZW5lcmF0aW9uX3NlcnZpY2Vfc29ja2V0X3BvcnQ9MAo="
+        - path: /etc/kata-containers/kata-tdx-nvidia-gpu/config.d/96-kata-kernel-config
+          mode: 0644
+          contents:
+            source: "data:text/plain;charset=utf-8;base64,W2h5cGVydmlzb3JdCnRkeF9xdW90ZV9nZW5lcmF0aW9uX3NlcnZpY2Vfc29ja2V0X3BvcnQ9MAo="
   kernelArguments:
     - kvm_intel.tdx=1
     - nohibernate
 EOF
 ```
+
+The two `config.d` files set `tdx_quote_generation_service_socket_port=0`, disabling QEMU vsock quote generation and enabling kernel-mediated TDX attestation via the QGS unix socket (required for OSC 1.13+).
 
 Apply the IOMMU passthrough parameters (required for GPU passthrough to kata VMs):
 
@@ -462,7 +472,7 @@ Node Feature Discovery (NFD) and OpenShift Sandboxed Containers (OSC) together e
 
 OSC is Red Hat's supported, productized distribution of Kata Containers. It installs and manages the runtime via an OLM operator, integrates with OpenShift's MachineConfig and node lifecycle management, and adds the `kata-cc` confidential containers variant with Intel® TDX / AMD SEV-SNP support and NVIDIA GPU passthrough on top of the upstream Kata Containers project.
 
-For more on Kata Containers, see the [Kata Containers documentation](https://katacontainers.io/) and the [OpenShift Sandboxed Containers 1.12 documentation](https://docs.redhat.com/en/documentation/openshift_sandboxed_containers/1.12).
+For more on Kata Containers, see the [Kata Containers documentation](https://katacontainers.io/) and the [OpenShift Sandboxed Containers 1.13 documentation](https://docs.redhat.com/en/documentation/openshift_sandboxed_containers/1.13).
 
 To perform automatically (after the hardware prerequisite above is complete):
 
@@ -594,7 +604,7 @@ oc get node <node-name> --show-labels | tr ',' '\n' | grep -E "tdx|snp"
 
 If the label is not present, the BIOS settings are not correctly saved — revisit the hardware prerequisite section.
 
-> For more details on configuring NFD for kata containers, see the [OpenShift Sandboxed Containers 1.12 documentation](https://docs.redhat.com/en/documentation/openshift_sandboxed_containers/1.12).
+> For more details on configuring NFD for kata containers, see the [OpenShift Sandboxed Containers 1.13 documentation](https://docs.redhat.com/en/documentation/openshift_sandboxed_containers/1.13).
 
 #### Step 2: Install OpenShift Sandboxed Containers
 
@@ -606,7 +616,7 @@ If the label is not present, the BIOS settings are not correctly saved — revis
 2. Search for "OpenShift sandboxed containers"
 3. Select **OpenShift sandboxed containers operator** (Red Hat source)
 4. Click **Install**, leave defaults (namespace: `openshift-sandboxed-containers-operator`), set **Update approval** to **Manual**, click **Install**
-   > **Minimum version: 1.12** — this is the first release with NVIDIA GPU confidential computing support (`kata-cc-nvidia-gpu` runtime class and NRAS attestation).
+   > **Minimum version: 1.13**
 5. Go to **Operators → Installed Operators**, select namespace `openshift-sandboxed-containers-operator`, click **Upgrade available** and approve the InstallPlan
 6. Wait until the status shows **Succeeded**
 
@@ -1511,6 +1521,7 @@ oc delete trusteeconfig trusteeconfig -n trustee-operator-system
 oc delete namespace trustee-operator-system
 oc delete subscription sandboxed-containers-operator -n openshift-sandboxed-containers-operator
 oc delete namespace openshift-sandboxed-containers-operator
+oc delete crd kataconfigs.kataconfiguration.openshift.io
 oc delete subscription nfd -n openshift-nfd
 oc delete namespace openshift-nfd
 ```

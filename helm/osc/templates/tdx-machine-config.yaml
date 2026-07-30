@@ -1,5 +1,8 @@
 # Enables Intel TDX in the kernel and loads the vsock-loopback module required
 # by the kata agent for host-guest communication.
+# Also drops config.d overrides to disable vsock quote generation (port=0),
+# directing the kata runtime to use kernel-mediated TDX quote generation via
+# the QGS unix socket instead (required for OSC 1.13+).
 # Default role: master (single-node / SNO).  For multi-node clusters where
 # kata workloads run on worker nodes, change the role label to "worker".
 apiVersion: machineconfiguration.openshift.io/v1
@@ -18,6 +21,14 @@ spec:
           mode: 0644
           contents:
             source: "data:,vsock-loopback%0A"
+        - path: /etc/kata-containers/kata-tdx/config.d/96-kata-kernel-config
+          mode: 0644
+          contents:
+            source: "data:text/plain;charset=utf-8;base64,W2h5cGVydmlzb3JdCnRkeF9xdW90ZV9nZW5lcmF0aW9uX3NlcnZpY2Vfc29ja2V0X3BvcnQ9MAo="
+        - path: /etc/kata-containers/kata-tdx-nvidia-gpu/config.d/96-kata-kernel-config
+          mode: 0644
+          contents:
+            source: "data:text/plain;charset=utf-8;base64,W2h5cGVydmlzb3JdCnRkeF9xdW90ZV9nZW5lcmF0aW9uX3NlcnZpY2Vfc29ja2V0X3BvcnQ9MAo="
   kernelArguments:
     - kvm_intel.tdx=1
     - nohibernate
