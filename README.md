@@ -25,7 +25,7 @@ AI-powered classification from North Sea seismic data — running with a three-f
     - [Step 2: Install OpenShift Sandboxed Containers](#step-2-install-openshift-sandboxed-containers)
   - [Intel TDX Quote Generation Service setup — application deployer (cluster-admin, once per cluster, Intel TDX only)](#intel-tdx-quote-generation-service-setup--application-deployer-cluster-admin-once-per-cluster-intel-tdx-only)
     - [Step 1: Install the Intel Device Plugin Operator](#step-1-install-the-intel-device-plugin-operator)
-    - [Step 2: Deploy PCCS and QGS](#step-2-deploy-pccs-and-qgs)
+    - [Step 2: Install the Intel TDX DCAP Operator and deploy QGS](#step-2-install-the-intel-tdx-dcap-operator-and-deploy-qgs)
   - [Trustee setup — model owner (cluster-admin, once per cluster)](#trustee-setup--model-owner-cluster-admin-once-per-cluster)
     - [Step 1: Install the Trustee operator](#step-1-install-the-trustee-operator)
     - [Step 2: Create the kbs-auth-public-key Secret](#step-2-create-the-kbs-auth-public-key-secret)
@@ -450,7 +450,7 @@ make check-prereqs
 >
 > PCCS only serves Intel-signed certificates — a compromised PCCS cannot forge trust or produce fake attestation quotes, since all certificates are verified against Intel's root CA. However, a stale or tampered PCCS could serve outdated revocation lists (CRLs) or TCB (Trusted Computing Base) data, which would prevent the system from detecting known vulnerabilities in platform firmware. For this reason, PCCS should run on trusted, well-maintained infrastructure — not on the same untrusted workload cluster — and should be kept updated so that revocation and TCB information stays current.
 >
-> This quickstart deploys PCCS and QGS as part of the [Intel TDX Quote Generation Service setup](#intel-tdx-quote-generation-service-setup--application-deployer-cluster-admin-once-per-cluster-intel-tdx-only) step using Red Hat's supported `osc-pccs` and `osc-tdx-qgs` container images. AMD SEV-SNP does not require PCCS.
+> This quickstart deploys QGS and PCCS via the Intel TDX DCAP Operator as part of the [Intel TDX Quote Generation Service setup](#intel-tdx-quote-generation-service-setup--application-deployer-cluster-admin-once-per-cluster-intel-tdx-only) step. AMD SEV-SNP does not require PCCS.
 
 ---
 
@@ -781,7 +781,9 @@ When a pod runs inside a kata TDX VM and needs to attest to Trustee, the CDH (Co
 
 Without QGS listening on vsock port 4050, CDH blocks indefinitely waiting for the quote — the pod hangs at `Waiting for CDH to be ready...` and never contacts Trustee.
 
-QGS also needs a **Provisioning Certificate Caching Service (PCCS)** to fetch the PCK (Platform Certification Key) certificate chain from Intel PCS. PCCS caches those certificates locally so QGS can build a complete DCAP quote chain. Both services use Red Hat's supported container images from `registry.redhat.io/openshift-sandboxed-containers/`.
+QGS also needs a **Provisioning Certificate Caching Service (PCCS)** to fetch the PCK (Platform Certification Key) certificate chain from Intel PCS. PCCS caches those certificates locally so QGS can build a complete DCAP quote chain.
+
+Both QGS and PCCS are deployed and managed by the **Intel TDX DCAP Operator** (`intel-tdx-dcap-operator` from the Red Hat Certified catalog). The operator takes a `TdxQuoteGenerationService` CR and handles pod lifecycle, SCC configuration, and certificate setup automatically.
 
 The QGS pod requests SGX device resources (`sgx.intel.com/enclave`, `sgx.intel.com/provision`) provided by the **Intel SGX Device Plugin**, which requires the **Intel Device Plugin Operator** to be installed first.
 
@@ -822,7 +824,7 @@ The Intel Device Plugin Operator manages the SGX Device Plugin DaemonSet that ex
 4. Click **Install**, set the namespace to `intel-dcap` (create it first if needed), set **Update approval** to **Manual**, click **Install**
 5. Go to **Operators → Installed Operators**, select namespace `intel-dcap`, approve the InstallPlan, wait for status **Succeeded**
 
-#### Step 2: Deploy PCCS and QGS
+#### Step 2: Install the Intel TDX DCAP Operator and deploy QGS
 
 ```bash
 INTEL_API_KEY=<your-intel-pcs-api-key>   # primary or secondary key from Step 0
@@ -831,40 +833,39 @@ INTEL_API_KEY=<your-intel-pcs-api-key>   # primary or secondary key from Step 0
 oc apply -f helm/osc/templates/intel-dcap-namespace.yaml
 oc apply -f helm/osc/templates/intel-dcap-sgx-plugin.yaml
 
-# Generate PCCS tokens and TLS certificate
-USER_TOKEN=$(openssl rand -hex 16)
-ADMIN_TOKEN=$(openssl rand -hex 16)
-USER_TOKEN_HASH=$(printf '%s' "$USER_TOKEN" | sha512sum | tr -d '[:space:]-')
-ADMIN_TOKEN_HASH=$(printf '%s' "$ADMIN_TOKEN" | sha512sum | tr -d '[:space:]-')
-oc create secret generic pccs-secrets -n intel-dcap \
-    --from-literal=PCCS_API_KEY="$INTEL_API_KEY" \
-    --from-literal=USER_TOKEN="$USER_TOKEN" \
-    --from-literal=PCCS_USER_TOKEN_HASH="$USER_TOKEN_HASH" \
-    --from-literal=PCCS_ADMIN_TOKEN_HASH="$ADMIN_TOKEN_HASH"
-openssl req -x509 -sha256 -nodes -days 365 -newkey rsa:2048 \
-    -keyout /tmp/pccs-key.pem -out /tmp/pccs-cert.pem \
-    -subj "/CN=pccs-service.intel-dcap.svc.cluster.local"
-oc create secret generic pccs-tls -n intel-dcap \
-    --from-file=private.pem=/tmp/pccs-key.pem \
-    --from-file=file.crt=/tmp/pccs-cert.pem
-rm -f /tmp/pccs-key.pem /tmp/pccs-cert.pem
+# Create the Intel PCS API key Secret (referenced by the TdxQuoteGenerationService CR)
+oc create secret generic intel-pcs-api-key \
+    -n intel-dcap \
+    --from-literal=api-key="$INTEL_API_KEY"
 
-# Deploy PCCS
-oc apply -f helm/osc/templates/intel-dcap-pccs-rbac.yaml
-oc apply -f helm/osc/templates/intel-dcap-pccs-service.yaml
-oc apply -f helm/osc/templates/intel-dcap-pccs-deployment.yaml
-oc rollout status deployment/pccs -n intel-dcap --timeout=5m
+# Install the Intel TDX DCAP Operator
+oc apply -f helm/osc/templates/intel-dcap-tdxqgs-subscription.yaml
 
-# Deploy QGS
-oc apply -f helm/osc/templates/intel-dcap-qgs-rbac.yaml
-oc apply -f helm/osc/templates/intel-dcap-qgs-ds.yaml
+# Approve the InstallPlan (installPlanApproval: Manual)
+until oc get installplan -n intel-dcap \
+        -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.clusterServiceVersionNames[0]}{"\n"}{end}' \
+        | grep -q "intel-tdx-dcap"; do sleep 5; done
+INSTALL_PLAN=$(oc get installplan -n intel-dcap \
+    -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.clusterServiceVersionNames[0]}{"\n"}{end}' \
+    | grep "intel-tdx-dcap" | awk '{print $1}')
+oc patch installplan "$INSTALL_PLAN" -n intel-dcap \
+    --type merge --patch '{"spec":{"approved":true}}'
+
+# Wait for operator to reach Succeeded
+until oc get csv -n intel-dcap | grep -q "intel-tdx-dcap-operator.*Succeeded"; do sleep 10; done
+
+# Apply the TdxQuoteGenerationService CR (deploys QGS + PCCS via the operator)
+oc apply -f helm/osc/templates/intel-dcap-tdxqgs-cr.yaml
 ```
 
-Verify QGS is listening:
+Verify the DCAP stack:
 
 ```bash
-# Check QGS pod is Running on the TDX kata node
-oc get pods -n intel-dcap -l app=tdx-qgs -o wide
+# Check all pods in intel-dcap are Running
+oc get pods -n intel-dcap
+
+# Check TdxQuoteGenerationService CR was accepted
+oc get tdxquotegenerationservice -n intel-dcap
 
 # Check vsock port 4050 on the node (optional — requires node debug access)
 oc debug node/<kata-node> -- chroot /host ss --vsock -l 2>/dev/null | grep 4050
@@ -872,9 +873,10 @@ oc debug node/<kata-node> -- chroot /host ss --vsock -l 2>/dev/null | grep 4050
 
 **Expected outcome:**
 - ✓ `intel-device-plugins-operator-*` CSV `Succeeded` in `intel-dcap`
+- ✓ `intel-tdx-dcap-operator-*` CSV `Succeeded` in `intel-dcap`
 - ✓ `sgx-plugin-*` pod Running on the TDX/SGX node with `sgx.intel.com/enclave` resource available
-- ✓ `pccs-*` pod Running
-- ✓ `tdx-qgs-*` pod Running on the TDX kata node
+- ✓ QGS pod Running on the TDX kata node (operator-managed; check `oc get pods -n intel-dcap`)
+- ✓ `oc get tdxquotegenerationservice -n intel-dcap` shows `intel-tdx-dcap`
 
 ---
 

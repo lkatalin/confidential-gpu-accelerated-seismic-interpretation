@@ -105,10 +105,9 @@ help:
 	@echo "    setup-gpu-passthrough    - Label GPU node(s) for kata VM passthrough without re-running setup-kata"
 	@echo "                               Requires GPU_PASSTHROUGH_NODES=\"<node1> <node2>\""
 	@echo "                               Safe to run repeatedly — idempotent"
-	@echo "    setup-dcap               - Deploy Intel SGX Device Plugin, PCCS, and TDX Quote Generation Service"
+	@echo "    setup-dcap               - Deploy Intel SGX Device Plugin and Intel TDX DCAP Operator (QGS + PCCS)"
 	@echo "                               Required for TDX attestation: QGS listens on vsock port 4050 so"
 	@echo "                               CDH inside kata VMs can generate attestation quotes"
-	@echo "                               Requires Intel Device Plugin Operator installed from OperatorHub"
 	@echo "                               Requires INTEL_API_KEY from api.portal.trustedservices.intel.com"
 	@echo "                               Requires setup-kata to have completed first"
 	@echo "    setup-trustee-in-cluster - Install Trustee KBS operator and configure attestation policy"
@@ -871,7 +870,7 @@ setup-dcap:
 	    exit 1; \
 	}
 	@set -e; \
-	echo "=== setup-dcap: Intel SGX Device Plugin, PCCS, and TDX Quote Generation Service ==="; \
+	echo "=== setup-dcap: Intel SGX Device Plugin and Intel TDX DCAP Operator ==="; \
 	\
 	echo "=== Step 1: intel-dcap namespace ==="; \
 	if oc get namespace intel-dcap --ignore-not-found 2>/dev/null | grep -q .; then \
@@ -909,67 +908,49 @@ setup-dcap:
 	    sleep 10; \
 	fi; \
 	\
-	echo "=== Step 3: PCCS secrets ==="; \
-	if oc get secret pccs-secrets -n intel-dcap \
+	echo "=== Step 3: Intel PCS API key Secret ==="; \
+	if oc get secret intel-pcs-api-key -n intel-dcap \
 	        --ignore-not-found 2>/dev/null | grep -q .; then \
-	    echo "WARNING: pccs-secrets already exists, skipping."; \
+	    echo "WARNING: intel-pcs-api-key Secret already exists, skipping."; \
 	else \
-	    echo "Generating PCCS tokens and TLS certificate..."; \
-	    USER_TOKEN=$$(openssl rand -hex 16); \
-	    ADMIN_TOKEN=$$(openssl rand -hex 16); \
-	    USER_TOKEN_HASH=$$(printf '%s' "$$USER_TOKEN" | sha512sum | tr -d '[:space:]-'); \
-	    ADMIN_TOKEN_HASH=$$(printf '%s' "$$ADMIN_TOKEN" | sha512sum | tr -d '[:space:]-'); \
-	    oc create secret generic pccs-secrets \
+	    oc create secret generic intel-pcs-api-key \
 	        -n intel-dcap \
-	        --from-literal=PCCS_API_KEY="$(INTEL_API_KEY)" \
-	        --from-literal=USER_TOKEN="$$USER_TOKEN" \
-	        --from-literal=PCCS_USER_TOKEN_HASH="$$USER_TOKEN_HASH" \
-	        --from-literal=PCCS_ADMIN_TOKEN_HASH="$$ADMIN_TOKEN_HASH"; \
-	    echo "pccs-secrets created."; \
-	fi; \
-	if oc get secret pccs-tls -n intel-dcap \
-	        --ignore-not-found 2>/dev/null | grep -q .; then \
-	    echo "WARNING: pccs-tls already exists, skipping."; \
-	else \
-	    openssl req -x509 -sha256 -nodes -days 365 -newkey rsa:2048 \
-	        -keyout /tmp/pccs-key.pem \
-	        -out /tmp/pccs-cert.pem \
-	        -subj "/CN=pccs-service.intel-dcap.svc.cluster.local" \
-	        2>/dev/null; \
-	    oc create secret generic pccs-tls \
-	        -n intel-dcap \
-	        --from-file=private.pem=/tmp/pccs-key.pem \
-	        --from-file=file.crt=/tmp/pccs-cert.pem; \
-	    rm -f /tmp/pccs-key.pem /tmp/pccs-cert.pem; \
-	    echo "pccs-tls created."; \
+	        --from-literal=api-key="$(INTEL_API_KEY)"; \
+	    echo "intel-pcs-api-key Secret created."; \
 	fi; \
 	\
-	echo "=== Step 4: PCCS deployment ==="; \
-	if oc get deployment pccs -n intel-dcap \
-	        --ignore-not-found 2>/dev/null | grep -q .; then \
-	    echo "WARNING: PCCS deployment already exists, skipping."; \
+	echo "=== Step 4: Intel TDX DCAP Operator ==="; \
+	if oc get csv -n intel-dcap 2>/dev/null \
+	        | grep -q "intel-tdx-dcap-operator.*Succeeded"; then \
+	    echo "WARNING: Intel TDX DCAP Operator already installed, skipping."; \
 	else \
-	    oc apply -f helm/osc/templates/intel-dcap-pccs-rbac.yaml; \
-	    oc apply -f helm/osc/templates/intel-dcap-pccs-service.yaml; \
-	    oc apply -f helm/osc/templates/intel-dcap-pccs-deployment.yaml; \
-	    echo "Waiting for PCCS to be ready..."; \
-	    oc rollout status deployment/pccs -n intel-dcap --timeout=5m; \
-	    echo "PCCS ready."; \
+	    echo "Installing Intel TDX DCAP Operator..."; \
+	    oc apply -f helm/osc/templates/intel-dcap-tdxqgs-subscription.yaml; \
+	    echo "Waiting for DCAP Operator InstallPlan..."; \
+	    until oc get installplan -n intel-dcap \
+	            -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.clusterServiceVersionNames[0]}{"\n"}{end}' \
+	            2>/dev/null | grep -q "intel-tdx-dcap"; do sleep 5; done; \
+	    INSTALL_PLAN=$$(oc get installplan -n intel-dcap \
+	        -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.clusterServiceVersionNames[0]}{"\n"}{end}' \
+	        | grep "intel-tdx-dcap" | awk '{print $$1}'); \
+	    oc patch installplan $$INSTALL_PLAN -n intel-dcap \
+	        --type merge --patch '{"spec":{"approved":true}}'; \
+	    until oc get csv -n intel-dcap 2>/dev/null \
+	            | grep -q "intel-tdx-dcap-operator.*Succeeded"; do sleep 10; done; \
+	    echo "Intel TDX DCAP Operator ready."; \
 	fi; \
 	\
-	echo "=== Step 5: TDX Quote Generation Service ==="; \
-	if oc get daemonset tdx-qgs -n intel-dcap \
+	echo "=== Step 5: TdxQuoteGenerationService CR ==="; \
+	if oc get tdxquotegenerationservice intel-tdx-dcap -n intel-dcap \
 	        --ignore-not-found 2>/dev/null | grep -q .; then \
-	    echo "WARNING: tdx-qgs DaemonSet already exists, skipping."; \
+	    echo "WARNING: TdxQuoteGenerationService intel-tdx-dcap already exists, skipping."; \
 	else \
-	    oc apply -f helm/osc/templates/intel-dcap-qgs-rbac.yaml; \
-	    oc apply -f helm/osc/templates/intel-dcap-qgs-ds.yaml; \
+	    oc apply -f helm/osc/templates/intel-dcap-tdxqgs-cr.yaml; \
 	    echo "Waiting for QGS pod(s) to be ready on TDX nodes (up to 5 min)..."; \
 	    DEADLINE=$$(( $$(date +%s) + 300 )); \
-	    until oc get daemonset tdx-qgs -n intel-dcap \
-	            -o jsonpath='{.status.numberReady}' 2>/dev/null | grep -qv '^0$$'; do \
+	    until oc get pods -n intel-dcap 2>/dev/null | grep -v Completed | grep -v operator | grep -q Running; do \
 	        if [ $$(date +%s) -ge $$DEADLINE ]; then \
-	            echo "WARNING: QGS pods not yet ready — check: oc get pods -n intel-dcap -l app=tdx-qgs"; \
+	            echo "WARNING: QGS pods not yet ready — check: oc get pods -n intel-dcap"; \
 	            echo "         Common cause: SGX resources not yet available (Intel Device Plugin still starting)."; \
 	            echo "         Re-run setup-dcap once pods are running."; \
 	            break; \
@@ -978,18 +959,10 @@ setup-dcap:
 	    done; \
 	fi; \
 	\
-	echo "Verifying QGS is listening on vsock port 4050..."; \
-	QGS_NODE=$$(oc get pods -n intel-dcap -l app=tdx-qgs \
-	    -o jsonpath='{.items[0].spec.nodeName}' 2>/dev/null || echo ""); \
-	if [ -n "$$QGS_NODE" ]; then \
-	    echo "QGS pod scheduled on node: $$QGS_NODE"; \
-	    echo "=== setup-dcap complete — run make setup-trustee-in-cluster next ==="; \
-	else \
-	    echo "WARNING: No QGS pods scheduled yet. Verify:"; \
-	    echo "  1. Node has label intel.feature.node.kubernetes.io/tdx=true"; \
-	    echo "  2. Intel SGX Device Plugin is running (sgx.intel.com/enclave resource available)"; \
-	    echo "  3. oc get pods -n intel-dcap"; \
-	fi
+	echo "DCAP stack status:"; \
+	oc get pods -n intel-dcap; \
+	oc get tdxquotegenerationservice -n intel-dcap --ignore-not-found 2>/dev/null || true; \
+	echo "=== setup-dcap complete — run make setup-trustee-in-cluster next ==="
 
 .PHONY: setup-trustee-in-cluster
 setup-trustee-in-cluster:
