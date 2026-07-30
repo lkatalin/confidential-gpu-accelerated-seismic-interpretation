@@ -831,9 +831,9 @@ The Intel Device Plugin Operator manages the SGX Device Plugin DaemonSet that ex
 1. Go to **Operators → OperatorHub**
 2. Search for **Intel TDX DCAP Operator**
 3. Select it (certified — Intel source)
-4. Click **Install**, leave the namespace as **All namespaces** (`openshift-operators`), set the channel to **alpha**, set **Update approval** to **Manual**, click **Install**
-5. Go to **Operators → Installed Operators**, select namespace `openshift-operators`, approve the InstallPlan, wait for status **Succeeded**
-6. Create the Intel PCS API key Secret:
+4. Click **Install**, set **Installation mode** to **A specific namespace on the cluster**, select `intel-dcap`, set the channel to **alpha**, set **Update approval** to **Manual**, click **Install**
+5. Go to **Operators → Installed Operators**, select namespace `intel-dcap`, approve the InstallPlan, wait for status **Succeeded**
+6. Create the Intel PCS API key Secret in the operator's namespace:
    ```bash
    oc create secret generic intel-pcs-api-key -n intel-dcap --from-literal=api-key="$INTEL_API_KEY"
    ```
@@ -852,7 +852,7 @@ oc get csv -n intel-dcap | grep intel-device-plugins-operator
 oc get csv -n openshift-operators | grep intel-tdx-dcap-operator
 
 # Check TdxQuoteGenerationService CR was accepted
-oc get TdxQuoteGenerationService -n intel-dcap
+oc get tdxquotegenerationservice -n intel-dcap
 
 # Check PCCS and QGS pods are Running
 oc get pods -n intel-dcap
@@ -860,8 +860,8 @@ oc get pods -n intel-dcap
 
 **Expected outcome:**
 - ✓ `intel-device-plugins-operator-*` CSV `Succeeded` in `intel-dcap`
-- ✓ `intel-tdx-dcap-operator-*` CSV `Succeeded` in `openshift-operators`
-- ✓ `TdxQuoteGenerationService` shows `intel-tdx-dcap`
+- ✓ `intel-tdx-dcap-operator-*` CSV `Succeeded` in `intel-dcap`
+- ✓ `tdxquotegenerationservice` shows `intel-tdx-dcap`
 - ✓ `pccs-*` pod Running in `intel-dcap`
 - ✓ `tdx-qgs-*` pod Running in `intel-dcap`
 
