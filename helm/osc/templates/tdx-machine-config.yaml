@@ -24,11 +24,11 @@ spec:
         - path: /etc/kata-containers/kata-tdx/config.d/96-kata-kernel-config
           mode: 0644
           contents:
-            source: "data:text/plain;charset=utf-8;base64,W2h5cGVydmlzb3IucWVtdV0KdGR4X3F1b3RlX2dlbmVyYXRpb25fc2VydmljZV9zb2NrZXRfcG9ydCA9IDAK"
+            source: "data:text/plain;charset=utf-8;base64,W2h5cGVydmlzb3IucWVtdV0KdGR4X3F1b3RlX2dlbmVyYXRpb25fc2VydmljZV9zb2NrZXRfcG9ydCA9IDAKZGV2aWNlcyA9IFsiL2Rldi90ZHhfZ3Vlc3QiXQo="
         - path: /etc/kata-containers/kata-tdx-nvidia-gpu/config.d/96-kata-kernel-config
           mode: 0644
           contents:
-            source: "data:text/plain;charset=utf-8;base64,W2h5cGVydmlzb3IucWVtdV0KdGR4X3F1b3RlX2dlbmVyYXRpb25fc2VydmljZV9zb2NrZXRfcG9ydCA9IDAK"
+            source: "data:text/plain;charset=utf-8;base64,W2h5cGVydmlzb3IucWVtdV0KdGR4X3F1b3RlX2dlbmVyYXRpb25fc2VydmljZV9zb2NrZXRfcG9ydCA9IDAKZGV2aWNlcyA9IFsiL2Rldi90ZHhfZ3Vlc3QiXQo="
   kernelArguments:
     - kvm_intel.tdx=1
     - nohibernate

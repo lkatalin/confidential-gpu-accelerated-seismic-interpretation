@@ -395,18 +395,18 @@ spec:
         - path: /etc/kata-containers/kata-tdx/config.d/96-kata-kernel-config
           mode: 0644
           contents:
-            source: "data:text/plain;charset=utf-8;base64,W2h5cGVydmlzb3IucWVtdV0KdGR4X3F1b3RlX2dlbmVyYXRpb25fc2VydmljZV9zb2NrZXRfcG9ydCA9IDAK"
+            source: "data:text/plain;charset=utf-8;base64,W2h5cGVydmlzb3IucWVtdV0KdGR4X3F1b3RlX2dlbmVyYXRpb25fc2VydmljZV9zb2NrZXRfcG9ydCA9IDAKZGV2aWNlcyA9IFsiL2Rldi90ZHhfZ3Vlc3QiXQo="
         - path: /etc/kata-containers/kata-tdx-nvidia-gpu/config.d/96-kata-kernel-config
           mode: 0644
           contents:
-            source: "data:text/plain;charset=utf-8;base64,W2h5cGVydmlzb3IucWVtdV0KdGR4X3F1b3RlX2dlbmVyYXRpb25fc2VydmljZV9zb2NrZXRfcG9ydCA9IDAK"
+            source: "data:text/plain;charset=utf-8;base64,W2h5cGVydmlzb3IucWVtdV0KdGR4X3F1b3RlX2dlbmVyYXRpb25fc2VydmljZV9zb2NrZXRfcG9ydCA9IDAKZGV2aWNlcyA9IFsiL2Rldi90ZHhfZ3Vlc3QiXQo="
   kernelArguments:
     - kvm_intel.tdx=1
     - nohibernate
 EOF
 ```
 
-The two `config.d` files set `tdx_quote_generation_service_socket_port=0`, disabling QEMU vsock quote generation and enabling kernel-mediated TDX attestation via the QGS unix socket (required for OSC 1.13+).
+The two `config.d` files set `tdx_quote_generation_service_socket_port=0`, disabling QEMU vsock quote generation and enabling kernel-mediated TDX attestation via the QGS unix socket (required for OSC 1.13+). They also pass `/dev/tdx_guest` through to the kata VM so the Attestation Agent can open the TDX hardware device to generate quotes.
 
 Apply the IOMMU passthrough parameters (required for GPU passthrough to kata VMs):
 
