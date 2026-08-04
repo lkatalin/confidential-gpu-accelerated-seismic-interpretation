@@ -1069,14 +1069,15 @@ setup-attestation:
 	[ -n "$(TDX_RTMR_2)" ] && echo "rtmr_2:    $(TDX_RTMR_2)" || true; \
 	CURRENT_REF=$$(oc get configmap trusteeconfig-rvps-reference-values \
 	    -n trustee-operator-system \
-	    -o jsonpath='{.data.reference-values\.json}'); \
+	    -o jsonpath='{.data.reference_value}' 2>/dev/null || echo '{}'); \
 	NEW_REF=$$(TDX_MR_TD="$(TDX_MR_TD)" TDX_XFAM="$(TDX_XFAM)" \
 	    TDX_RTMR_1="$(TDX_RTMR_1)" TDX_RTMR_2="$(TDX_RTMR_2)" \
 	    python3 scripts/update-rvps.py "$$CURRENT_REF" "$$PCR8"); \
-	oc create configmap trusteeconfig-rvps-reference-values \
+	PATCH=$$(echo "$$NEW_REF" | python3 -c 'import json,sys; print(json.dumps({"data":{"reference_value":sys.stdin.read().strip()}}))'); \
+	oc patch configmap trusteeconfig-rvps-reference-values \
 	    -n trustee-operator-system \
-	    --from-literal="reference-values.json=$$NEW_REF" \
-	    --dry-run=client -o yaml | oc apply -f -
+	    --type merge \
+	    -p "$$PATCH"
 	@echo "Registering KBS secrets for namespace $(NAMESPACE) via kbsSecretResources..."
 	@set -e; \
 	POLICY=$$(printf '{"default":[{"type":"reject"}],"transports":{"docker":{"%s":[{"type":"sigstoreSigned","keyPath":"kbs:///default/%s/cosign-key"}],"%s":[{"type":"sigstoreSigned","keyPath":"kbs:///default/%s/cosign-key"}]}}}' \
@@ -1093,7 +1094,7 @@ setup-attestation:
 	    -n trustee-operator-system \
 	    --type merge \
 	    -p "{\"spec\":{\"kbsSecretResources\":$$RESOURCES}}"
-	@echo "Restarting Trustee so the init container re-reads the updated RVPS configmap..."
+	@echo "Restarting Trustee to pick up the updated RVPS configmap..."
 	@oc rollout restart deployment/trustee-deployment -n trustee-operator-system
 	@oc rollout status deployment/trustee-deployment -n trustee-operator-system --timeout=2m
 	@echo "Attestation secrets and RVPS reference values registered for namespace $(NAMESPACE)."

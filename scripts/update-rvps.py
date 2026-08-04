@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 """
-Upsert RVPS reference values into the trusteeconfig-rvps-reference-values configmap.
+Upsert RVPS reference values for OSC 1.13+ (BoT 1.2 format).
 
-The configmap stores values in the RVPS provenance format:
-  [{"version": "0.1.0", "type": "sample", "payload": "<base64-encoded-json>"}]
+For OSC 1.13+ (Red Hat build of Trustee 1.2), the configmap key reference_value
+stores a JSON object where each measurement name maps to a base64-encoded entry:
 
-where the decoded payload is a JSON object mapping measurement names to arrays
-of allowed hex values:
-  {"mr_td": ["hex..."], "rtmr_1": ["hex..."], ...}
+  {"name": "mr_td", "expiration": "2099-12-31T00:00:00Z", "value": ["hex..."]}
 
 Usage: update-rvps.py <current_json> <pcr8_value>
-  current_json  - existing JSON content of the configmap's reference-values.json key
+  current_json  - existing JSON content of the reference_value key ({} if empty)
   pcr8_value    - computed tdx_pcr08 hex string for the current namespace/initdata
 
 TDX hardware measurements are read from the environment:
@@ -30,14 +28,32 @@ import json
 import os
 import sys
 
+EXPIRATION = "2099-12-31T00:00:00Z"
 
-def upsert(values, name, value):
+
+def decode_entry(b64str):
+    padding = (4 - len(b64str) % 4) % 4
+    return json.loads(base64.b64decode(b64str + '=' * padding).decode())
+
+
+def encode_entry(entry):
+    return base64.b64encode(json.dumps(entry, separators=(',', ':')).encode()).decode()
+
+
+def upsert(entries, name, value):
     if not value:
         return
-    if name not in values:
-        values[name] = []
-    if value not in values[name]:
-        values[name].append(value)
+    if name in entries:
+        try:
+            entry = decode_entry(entries[name])
+        except Exception:
+            entry = {"name": name, "expiration": EXPIRATION, "value": []}
+        if value not in entry["value"]:
+            entry["value"].append(value)
+        entries[name] = encode_entry(entry)
+    else:
+        entry = {"name": name, "expiration": EXPIRATION, "value": [value]}
+        entries[name] = encode_entry(entry)
 
 
 if len(sys.argv) != 3:
@@ -46,23 +62,17 @@ if len(sys.argv) != 3:
 
 current_json, pcr8 = sys.argv[1], sys.argv[2]
 
-# Extract existing values from provenance format (or start empty)
-values = {}
-if current_json.strip():
+entries = {}
+if current_json.strip() and current_json.strip() != '{}':
     try:
         entries = json.loads(current_json)
-        if entries and entries[0].get('type') == 'sample':
-            payload = entries[0]['payload']
-            padding = (4 - len(payload) % 4) % 4
-            values = json.loads(base64.b64decode(payload + '=' * padding).decode())
     except Exception:
-        values = {}
+        entries = {}
 
-upsert(values, 'tdx_pcr08', pcr8)
-upsert(values, 'mr_td',  os.environ.get('TDX_MR_TD', ''))
-upsert(values, 'rtmr_1', os.environ.get('TDX_RTMR_1', ''))
-upsert(values, 'rtmr_2', os.environ.get('TDX_RTMR_2', ''))
-upsert(values, 'xfam',   os.environ.get('TDX_XFAM', ''))
+upsert(entries, 'tdx_pcr08', pcr8)
+upsert(entries, 'mr_td',  os.environ.get('TDX_MR_TD', ''))
+upsert(entries, 'rtmr_1', os.environ.get('TDX_RTMR_1', ''))
+upsert(entries, 'rtmr_2', os.environ.get('TDX_RTMR_2', ''))
+upsert(entries, 'xfam',   os.environ.get('TDX_XFAM', ''))
 
-payload = base64.b64encode(json.dumps(values).encode()).decode()
-print(json.dumps([{'version': '0.1.0', 'type': 'sample', 'payload': payload}]))
+print(json.dumps(entries))

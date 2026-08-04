@@ -1034,43 +1034,15 @@ TDX_RTMR_2=e882c8d18de74cc30d506d56962e5d3eb33c98e6c25f0329857c29f03a48fb17b6c6b
 
 # Upsert all five entries. Running for a second namespace adds that namespace's
 # tdx_pcr08 without removing existing values — each namespace has a distinct PCR8.
-CURRENT_REF=$(oc get configmap trusteeconfig-rvps-reference-values \
-    -n trustee-operator-system -o json \
-    | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['reference-values.json'])" 2>/dev/null || echo "")
-NEW_REF=$(python3 -c "
-import json, base64
-current = '$CURRENT_REF'
-values = {}
-if current.strip():
-    try:
-        entries = json.loads(current)
-        if entries and entries[0].get('type') == 'sample':
-            payload = entries[0]['payload']
-            padding = (4 - len(payload) % 4) % 4
-            values = json.loads(base64.b64decode(payload + '=' * padding).decode())
-    except Exception:
-        values = {}
-def upsert(name, val):
-    if not val: return
-    values.setdefault(name, [])
-    if val not in values[name]: values[name].append(val)
-upsert('tdx_pcr08', '$PCR8')
-upsert('mr_td',  '$TDX_MR_TD')
-upsert('rtmr_1', '$TDX_RTMR_1')
-upsert('rtmr_2', '$TDX_RTMR_2')
-upsert('xfam',   '$TDX_XFAM')
-payload = base64.b64encode(json.dumps(values).encode()).decode()
-print(json.dumps([{'version': '0.1.0', 'type': 'sample', 'payload': payload}]))
-")
-oc create configmap trusteeconfig-rvps-reference-values \
-    -n trustee-operator-system \
-    --from-literal="reference-values.json=$NEW_REF" \
-    --dry-run=client -o yaml | oc apply -f -
+CURRENT_REF=$(oc get configmap trusteeconfig-rvps-reference-values -n trustee-operator-system -o jsonpath='{.data.reference_value}' 2>/dev/null || echo '{}')
+NEW_REF=$(TDX_MR_TD=$TDX_MR_TD TDX_XFAM=$TDX_XFAM TDX_RTMR_1=$TDX_RTMR_1 TDX_RTMR_2=$TDX_RTMR_2 python3 scripts/update-rvps.py "$CURRENT_REF" "$PCR8")
+PATCH=$(echo "$NEW_REF" | python3 -c 'import json,sys; print(json.dumps({"data":{"reference_value":sys.stdin.read().strip()}}))')
+oc patch configmap trusteeconfig-rvps-reference-values -n trustee-operator-system --type merge -p "$PATCH"
 oc rollout restart deployment/trustee-deployment -n trustee-operator-system
 oc rollout status deployment/trustee-deployment -n trustee-operator-system --timeout=2m
 ```
 
-> **Restart required.** The RVPS reference values are loaded by the `secret-converter` init container at pod start. A rollout restart is needed for the new values to take effect.
+> **Restart required.** The Trustee pod must restart to pick up the updated `reference_value` configmap key. A rollout restart is needed for the new values to take effect.
 
 > **Using a different OSC version?** The OVMF firmware and kata kernel measurements change with each OSC release, so the values in the Makefile will not match your environment. To collect the correct values:
 > 1. Run `./scripts/collect-tdx-measurements.sh $NAMESPACE` — it launches a temporary kata-cc probe pod, extracts the measurements, and deletes the pod when done.
