@@ -28,11 +28,11 @@ AI-powered classification from North Sea seismic data — running with a three-f
     - [Step 2: Install the Intel TDX DCAP Operator and deploy QGS](#step-2-install-the-intel-tdx-dcap-operator-and-deploy-qgs)
   - [Trustee setup — model owner (cluster-admin, once per cluster)](#trustee-setup--model-owner-cluster-admin-once-per-cluster)
     - [Step 1: Install the Trustee operator](#step-1-install-the-trustee-operator)
-    - [Step 2: Create the kbs-auth-public-key Secret](#step-2-create-the-kbs-auth-public-key-secret)
-    - [Step 3: Create the cert-manager Issuer and TLS Certificates](#step-3-create-the-cert-manager-issuer-and-tls-certificates)
+    - [Step 2: Create the cert-manager Issuer and TLS Certificates](#step-2-create-the-cert-manager-issuer-and-tls-certificates)
+    - [Step 3: Create the NRAS API key Secret](#step-3-create-the-nras-api-key-secret)
     - [Step 4: Deploy KBS](#step-4-deploy-kbs)
-    - [Step 5: Verify the KBS route](#step-5-verify-the-kbs-route)
-    - [Step 6: Configure the attestation policy](#step-6-configure-the-attestation-policy)
+    - [Step 5: Verify the KBS route and set HAProxy timeout](#step-5-verify-the-kbs-route-and-set-haproxy-timeout)
+    - [Step 6: Register RVPS reference values](#step-6-register-rvps-reference-values)
     - [Step 7: Register app-specific secrets with KBS](#step-7-register-app-specific-secrets-with-kbs)
   - [Application deployment — application deployer (namespace admin)](#application-deployment--application-deployer-namespace-admin)
     - [Step 1: Create the project](#step-1-create-the-project)
@@ -305,7 +305,7 @@ This quickstart involves two distinct parties. Each section is labeled with whic
 
 **Application deployer** — operates the OpenShift cluster where the application runs. Installs kata confidential containers infrastructure, deploys the application, and uses it. Has no access to the model decryption key or to Trustee administration.
 
-> **Quickstart simplification:** In this quickstart both roles are performed by one person and Trustee runs on the same cluster as the application for demo convenience. In production, Trustee would run on infrastructure controlled by the model owner, separate from the application cluster. Steps 1–6 of Trustee setup would be performed by whoever operates that infrastructure; Step 7 and both Optional sections are always model owner responsibilities.
+> **Quickstart simplification:** In this quickstart both roles are performed by one person and Trustee runs on the same cluster as the application for demo convenience. In production, Trustee would run on infrastructure controlled by the model owner, separate from the application cluster. Steps 1–5 of Trustee setup would be performed by whoever operates that infrastructure; Steps 6 and 7 and both Optional sections are always model owner responsibilities.
 
 ### Clone the repository
 
@@ -886,7 +886,7 @@ oc get pods -n intel-dcap | grep intel-tdx-dcap-qgs
 
 ### Trustee setup — model owner (cluster-admin, once per cluster)
 
-> **In this quickstart** the application deployer also runs Trustee setup for demo convenience. In production this section is performed by the model owner on independently controlled infrastructure. Step 7 is always a model owner responsibility regardless of deployment topology.
+> **In this quickstart** the application deployer also runs Trustee setup for demo convenience. In production this section is performed by the model owner on independently controlled infrastructure. Steps 6 and 7 are always model owner responsibilities regardless of deployment topology.
 
 To perform automatically (after Part 1 is complete):
 
@@ -900,7 +900,7 @@ Or follow the manual steps below.
 - Logged in as cluster-admin
 - `kata-cc` runtimeClass available (Kata containers setup above complete)
 - cert-manager installed (`openshift-cert-manager-operator` namespace)
-- NVIDIA NGC personal API key for NRAS — required for GPU CC attestation verification. Create one at [ngc.nvidia.com](https://ngc.nvidia.com) (free account) with **Public API Endpoints** selected under Services Included (see Step 2a below). Without this, the Trustee AS cannot contact NRAS to verify the GPU CC report, and attestation will fail the `hardware` check.
+- NVIDIA NGC personal API key for NRAS — required for GPU CC attestation verification. Create one at [ngc.nvidia.com](https://ngc.nvidia.com) (free account) with **Public API Endpoints** selected under Services Included (see Step 3 below). Without this, the Trustee AS cannot contact NRAS to verify the GPU CC report, and attestation will fail the `hardware` check.
 
 #### Step 1: Install the Trustee operator
 
@@ -915,28 +915,29 @@ Or follow the manual steps below.
 9. Click **Install**, then go to **Operators → Installed Operators**, select namespace `trustee-operator-system`, click **Upgrade available** and approve the InstallPlan
 10. Wait until the status shows **Succeeded**
 
-#### Step 2: Create the kbs-auth-public-key Secret
+#### Step 2: Create the cert-manager Issuer and TLS Certificates
 
-KBS will not start without an Ed25519 key pair. Only the public key is needed — generate the pair, create the Secret, then discard both keys immediately.
+The Trustee operator requires `trustee-tls-cert` and `trustee-token-cert` Secrets to exist before it will deploy KBS. These are issued by cert-manager in response to `Issuer` and `Certificate` resources that must be created before `TrusteeConfig` is applied.
+
+Run the script from the repository root — it detects the cluster app domain automatically:
 
 ```bash
-openssl genpkey -algorithm ed25519 -out /tmp/kbs-private.pem
-openssl pkey -in /tmp/kbs-private.pem -pubout -out /tmp/kbs-public.pem
-oc create secret generic kbs-auth-public-key \
-    -n trustee-operator-system \
-    --from-file=publicKey=/tmp/kbs-public.pem
-rm /tmp/kbs-private.pem /tmp/kbs-public.pem
+bash scripts/apply-kbs-certs.sh
 ```
 
-#### Step 2a: Create the NRAS API key Secret
+The script creates a self-signed `Issuer`, an RSA `Certificate` for KBS HTTPS (stored as `trustee-tls-cert`), and an ECDSA `Certificate` for attestation token verification (stored as `trustee-token-cert`), then waits for cert-manager to issue both.
+
+The Trustee operator derives a `trusteeconfig-https-cert-secret` from `trustee-tls-cert` and mounts that derived secret into KBS. `make install` embeds the certificate from `trusteeconfig-https-cert-secret` (key: `certificate`) in the initdata blob — the Confidential Data Hub inside the kata VM uses it to verify the KBS TLS connection. Do not read from `trustee-tls-cert` directly for this purpose; the two secrets contain different certificates.
+
+#### Step 3: Create the NRAS API key Secret
 
 The Trustee Attestation Service contacts NVIDIA NRAS (`nras.attestation.nvidia.com`) to verify GPU CC reports. NRAS requires an NGC personal API key.
 
 To create one at [ngc.nvidia.com](https://ngc.nvidia.com):
 
 1. Click your name (top right) → **Account Settings** → **Generate API Key**
-3. Set a name (e.g. `NRAS Key`), set expiration, and under **Services Included** check **Public API Endpoints**
-4. Copy the key immediately — it is shown only once
+2. Set a name (e.g. `NRAS Key`), set expiration, and under **Services Included** check **Public API Endpoints**
+3. Copy the key immediately — it is shown only once
 
 Then create the Secret:
 
@@ -953,20 +954,6 @@ make setup-trustee-in-cluster NRAS_API_KEY=<your-ngc-api-key>
 ```
 
 Without this Secret, the Trustee AS cannot verify GPU CC reports, and the attestation policy will reject pods because the `hardware` trustworthiness claim will not reach the affirming range.
-
-#### Step 3: Create the cert-manager Issuer and TLS Certificates
-
-The Trustee operator requires `trustee-tls-cert` and `trustee-token-cert` Secrets to exist before it will deploy KBS. These are issued by cert-manager in response to `Issuer` and `Certificate` resources that must be created before `TrusteeConfig` is applied.
-
-Run the script from the repository root — it detects the cluster app domain automatically:
-
-```bash
-bash scripts/apply-kbs-certs.sh
-```
-
-The script creates a self-signed `Issuer`, an RSA `Certificate` for KBS HTTPS (stored as `trustee-tls-cert`), and an ECDSA `Certificate` for attestation token verification (stored as `trustee-token-cert`), then waits for cert-manager to issue both.
-
-The Trustee operator derives a `trusteeconfig-https-cert-secret` from `trustee-tls-cert` and mounts that derived secret into KBS. `make install` embeds the certificate from `trusteeconfig-https-cert-secret` (key: `certificate`) in the initdata blob — the Confidential Data Hub inside the kata VM uses it to verify the KBS TLS connection. Do not read from `trustee-tls-cert` directly for this purpose; the two secrets contain different certificates.
 
 #### Step 4: Deploy KBS
 
@@ -995,7 +982,7 @@ spec:
 
 #### Step 5: Verify the KBS route and set HAProxy timeout
 
-The Trustee operator creates a passthrough TLS Route named `kbs-route` automatically when it processes the TrusteeConfig. Verify it exists and note its hostname — you will need it in Step 7:
+The Trustee operator creates a passthrough TLS Route named `kbs-route` automatically when it processes the TrusteeConfig. Verify it exists and note its hostname — you will need it in Step 6:
 
 ```bash
 oc get route kbs-route -n trustee-operator-system -o jsonpath='{.spec.host}'
@@ -1008,77 +995,7 @@ oc annotate route kbs-route -n trustee-operator-system \
     haproxy.router.openshift.io/timeout=120s
 ```
 
-#### Step 6: Configure RVPS and resource policy
-
-The Trustee operator created a KbsConfig named `trusteeconfig-kbs-config` when it processed the TrusteeConfig above. Apply the ConfigMaps first, then update KbsConfig to reference them.
-
-Create the RVPS reference values ConfigMap:
-
-```bash
-oc apply -f - <<'EOF'
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: conf-seismic-rvps-reference-values
-  namespace: trustee-operator-system
-data:
-  reference-values.json: "[]"
-EOF
-```
-
-Create the resource policy ConfigMap — this is the second gate after attestation, restricting resource access to clients whose token shows affirming hardware, configuration, and executables claims:
-
-```bash
-oc apply -f - <<'EOF'
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: conf-seismic-resource-policy
-  namespace: trustee-operator-system
-data:
-  policy.rego: |
-    package policy
-    import rego.v1
-
-    default allow = false
-
-    allow if {
-        some _, submod in input.submods
-        hardware := submod["ear.trustworthiness-vector"]["hardware"]
-        hardware >= 2
-        hardware <= 31
-        configuration := submod["ear.trustworthiness-vector"]["configuration"]
-        configuration >= 2
-        configuration <= 31
-        executables := submod["ear.trustworthiness-vector"]["executables"]
-        executables >= 2
-        executables <= 31
-    }
-EOF
-```
-
-Update the KbsConfig to reference both ConfigMaps:
-
-```bash
-oc apply -f - <<'EOF'
-apiVersion: confidentialcontainers.org/v1alpha1
-kind: KbsConfig
-metadata:
-  name: trusteeconfig-kbs-config
-  namespace: trustee-operator-system
-spec:
-  kbsDeploymentType: AllInOneDeployment
-  kbsServiceType: ClusterIP
-  kbsHttpsKeySecretName: trustee-tls-cert
-  kbsHttpsCertSecretName: trustee-tls-cert
-  kbsAuthSecretName: kbs-auth-public-key
-  kbsRvpsRefValuesConfigMapName: conf-seismic-rvps-reference-values
-  kbsResourcePolicyConfigMapName: conf-seismic-resource-policy
-EOF
-```
-5. Go to **Workloads → Pods** and wait for `trustee-deployment-*` to restart and return to **Running**
-
-#### Step 7: Register RVPS reference values
+#### Step 6: Register RVPS reference values
 
 The attestation policy requires five values in RVPS before it will release the model key:
 
@@ -1118,21 +1035,32 @@ TDX_RTMR_2=e882c8d18de74cc30d506d56962e5d3eb33c98e6c25f0329857c29f03a48fb17b6c6b
 # Upsert all five entries. Running for a second namespace adds that namespace's
 # tdx_pcr08 without removing existing values — each namespace has a distinct PCR8.
 CURRENT_REF=$(oc get configmap trusteeconfig-rvps-reference-values \
-    -n trustee-operator-system \
-    -o jsonpath='{.data.reference-values\.json}')
+    -n trustee-operator-system -o json \
+    | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['reference-values.json'])" 2>/dev/null || echo "")
 NEW_REF=$(python3 -c "
-import json
-entries = json.loads('$CURRENT_REF') if '$CURRENT_REF'.strip() else []
+import json, base64
+current = '$CURRENT_REF'
+values = {}
+if current.strip():
+    try:
+        entries = json.loads(current)
+        if entries and entries[0].get('type') == 'sample':
+            payload = entries[0]['payload']
+            padding = (4 - len(payload) % 4) % 4
+            values = json.loads(base64.b64decode(payload + '=' * padding).decode())
+    except Exception:
+        values = {}
 def upsert(name, val):
-    m = next((e for e in entries if e['name'] == name), None)
-    if m: m.setdefault('value',[]).append(val) if val not in m['value'] else None
-    else: entries.append({'name': name, 'value': [val]})
+    if not val: return
+    values.setdefault(name, [])
+    if val not in values[name]: values[name].append(val)
 upsert('tdx_pcr08', '$PCR8')
 upsert('mr_td',  '$TDX_MR_TD')
 upsert('rtmr_1', '$TDX_RTMR_1')
 upsert('rtmr_2', '$TDX_RTMR_2')
 upsert('xfam',   '$TDX_XFAM')
-print(json.dumps(entries))
+payload = base64.b64encode(json.dumps(values).encode()).decode()
+print(json.dumps([{'version': '0.1.0', 'type': 'sample', 'payload': payload}]))
 ")
 oc create configmap trusteeconfig-rvps-reference-values \
     -n trustee-operator-system \
@@ -1142,13 +1070,15 @@ oc rollout restart deployment/trustee-deployment -n trustee-operator-system
 oc rollout status deployment/trustee-deployment -n trustee-operator-system --timeout=2m
 ```
 
+> **Restart required.** The RVPS reference values are loaded by the `secret-converter` init container at pod start. A rollout restart is needed for the new values to take effect.
+
 > **Using a different OSC version?** The OVMF firmware and kata kernel measurements change with each OSC release, so the values in the Makefile will not match your environment. To collect the correct values:
 > 1. Run `./scripts/collect-tdx-measurements.sh $NAMESPACE` — it launches a temporary kata-cc probe pod, extracts the measurements, and deletes the pod when done.
 > 2. The script prints the OSC version, a Makefile variable block, and an `export` block.
 > 3. Paste the Makefile block into the Makefile (near `KATA_RUNTIME_CLASS`) and update the OSC version comment.
 > 4. Source the `export` lines into your shell, then run `make setup-attestation NAMESPACE=$NAMESPACE` as normal.
 
-#### Step 8: Register app-specific secrets with KBS
+#### Step 7: Register app-specific secrets with KBS
 
 Register the model decryption key, cosign public key, and image verification policy with KBS. Secrets are registered as a Kubernetes Secret in `trustee-operator-system` named after the deployment namespace; the Trustee operator mounts it into KBS via its `kbsSecretResources` mechanism. After this step KBS will only release the model key to a pod running an image signed by the holder of `model-owner-verification-keys/cosign.key` — the "executables" factor of the three-factor attestation check.
 
@@ -1205,7 +1135,7 @@ NAMESPACE=<your deployment namespace, e.g. seismic-interpretation>
 make setup-attestation NAMESPACE=$NAMESPACE
 ```
 
-> `make setup-intel-tee` (or `make setup-amd-tee`) runs the hardware prerequisite kernel parameter step. `make setup-kata` runs Part 1 Steps 1–2. `make setup-trustee-in-cluster` runs Trustee setup Steps 1–6 automatically (including Step 2a if `NRAS_API_KEY` is supplied). `make setup-attestation` performs Trustee setup Steps 7b and 8: it computes and registers `tdx_pcr08` plus any `TDX_MR_TD` / `TDX_XFAM` / `TDX_RTMR_1` / `TDX_RTMR_2` values exported in the shell, then registers the three KBS secrets. Export the TDX hardware values from Step 7a before running it to register all five RVPS entries in a single pass.
+> `make setup-intel-tee` (or `make setup-amd-tee`) runs the hardware prerequisite kernel parameter step. `make setup-kata` runs Part 1 Steps 1–2. `make setup-trustee-in-cluster` runs Trustee setup Steps 1–5 automatically (including Step 3 if `NRAS_API_KEY` is supplied). `make setup-attestation` performs Trustee setup Steps 6 and 7: it computes and registers `tdx_pcr08` plus any `TDX_MR_TD` / `TDX_XFAM` / `TDX_RTMR_1` / `TDX_RTMR_2` values exported in the shell, then registers the three KBS secrets. Export the TDX hardware values before running it to register all five RVPS entries in a single pass.
 
 ---
 

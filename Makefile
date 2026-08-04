@@ -1002,22 +1002,7 @@ setup-trustee-in-cluster:
 	    echo "Trustee operator ready."; \
 	fi; \
 	\
-	echo "=== Step 1a: kbs-auth-public-key Secret ==="; \
-	if oc get secret kbs-auth-public-key -n trustee-operator-system \
-	        --ignore-not-found 2>/dev/null | grep -q .; then \
-	    echo "WARNING: kbs-auth-public-key Secret already exists, skipping."; \
-	else \
-	    echo "Generating Ed25519 key pair for KBS..."; \
-	    openssl genpkey -algorithm ed25519 -out /tmp/kbs-private.pem; \
-	    openssl pkey -in /tmp/kbs-private.pem -pubout -out /tmp/kbs-public.pem; \
-	    oc create secret generic kbs-auth-public-key \
-	        -n trustee-operator-system \
-	        --from-file=publicKey=/tmp/kbs-public.pem; \
-	    rm -f /tmp/kbs-private.pem /tmp/kbs-public.pem; \
-	    echo "kbs-auth-public-key Secret created."; \
-	fi; \
-	\
-	echo "=== Step 1b: cert-manager Issuer and TLS Certificates ==="; \
+	echo "=== Step 1a: cert-manager Issuer and TLS Certificates ==="; \
 	if oc get secret trustee-tls-cert -n trustee-operator-system \
 	        --ignore-not-found 2>/dev/null | grep -q .; then \
 	    echo "WARNING: trustee-tls-cert Secret already exists, skipping cert creation."; \
@@ -1025,7 +1010,7 @@ setup-trustee-in-cluster:
 	    bash scripts/apply-kbs-certs.sh; \
 	fi; \
 	\
-	echo "=== Step 1c: NRAS API key (required for GPU CC attestation) ==="; \
+	echo "=== Step 1b: NRAS API key (required for GPU CC attestation) ==="; \
 	if [ -n "$(NRAS_API_KEY)" ]; then \
 	    if oc get secret nras-api-key -n trustee-operator-system \
 	            --ignore-not-found 2>/dev/null | grep -q .; then \
@@ -1047,7 +1032,7 @@ setup-trustee-in-cluster:
 	    echo "         if the Trustee AS cannot contact NRAS to verify the GPU CC report."; \
 	fi; \
 	\
-	echo "=== Step 2: TrusteeConfig ==="; \
+	echo "=== Step 2: TrusteeConfig (operator manages KbsConfig, policies, and RVPS configmap) ==="; \
 	if oc get trusteeconfig -n trustee-operator-system \
 	        --ignore-not-found 2>/dev/null | grep -q .; then \
 	    echo "WARNING: TrusteeConfig already exists — KBS already deployed, skipping."; \
@@ -1057,28 +1042,6 @@ setup-trustee-in-cluster:
 	        -n trustee-operator-system --timeout=5m; \
 	fi; \
 	\
-	echo "=== Step 3: Policy ConfigMaps and KbsConfig ==="; \
-	if oc get configmap conf-seismic-rvps-reference-values \
-	        -n trustee-operator-system --ignore-not-found 2>/dev/null | grep -q .; then \
-	    echo "WARNING: RVPS reference values ConfigMap already exists, skipping."; \
-	else \
-	    oc apply -f helm/trustee/templates/rvps-configmap.yaml; \
-	fi; \
-	if oc get configmap conf-seismic-resource-policy \
-	        -n trustee-operator-system --ignore-not-found 2>/dev/null | grep -q .; then \
-	    echo "WARNING: Resource policy ConfigMap already exists, skipping."; \
-	else \
-	    oc apply -f helm/trustee/templates/resource-policy-configmap.yaml; \
-	fi; \
-	if oc get kbsconfig trusteeconfig-kbs-config -n trustee-operator-system \
-	        -o jsonpath='{.spec.kbsResourcePolicyConfigMapName}' 2>/dev/null \
-	        | grep -q "conf-seismic"; then \
-	    echo "WARNING: KbsConfig already references conf-seismic policies, skipping."; \
-	else \
-	    oc apply -f helm/trustee/templates/kbs-config.yaml; \
-	    oc rollout status deployment/trustee-deployment \
-	        -n trustee-operator-system --timeout=5m; \
-	fi; \
 	echo "KBS route: $$(oc get route kbs-route \
 	    -n trustee-operator-system -o jsonpath='{.spec.host}')"; \
 	echo "=== setup-trustee-in-cluster complete ==="
@@ -1130,7 +1093,8 @@ setup-attestation:
 	    -n trustee-operator-system \
 	    --type merge \
 	    -p "{\"spec\":{\"kbsSecretResources\":$$RESOURCES}}"
-	@echo "Waiting for Trustee to restart with updated configuration..."
+	@echo "Restarting Trustee so the init container re-reads the updated RVPS configmap..."
+	@oc rollout restart deployment/trustee-deployment -n trustee-operator-system
 	@oc rollout status deployment/trustee-deployment -n trustee-operator-system --timeout=2m
 	@echo "Attestation secrets and RVPS reference values registered for namespace $(NAMESPACE)."
 
