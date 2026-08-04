@@ -1120,9 +1120,20 @@ TDX_RTMR_2=e882c8d18de74cc30d506d56962e5d3eb33c98e6c25f0329857c29f03a48fb17b6c6b
 CURRENT_REF=$(oc get configmap trusteeconfig-rvps-reference-values \
     -n trustee-operator-system \
     -o jsonpath='{.data.reference-values\.json}')
-NEW_REF=$(TDX_MR_TD="$TDX_MR_TD" TDX_XFAM="$TDX_XFAM" \
-    TDX_RTMR_1="$TDX_RTMR_1" TDX_RTMR_2="$TDX_RTMR_2" \
-    python3 scripts/update-rvps.py "$CURRENT_REF" "$PCR8")
+NEW_REF=$(python3 -c "
+import json
+entries = json.loads('$CURRENT_REF') if '$CURRENT_REF'.strip() else []
+def upsert(name, val):
+    m = next((e for e in entries if e['name'] == name), None)
+    if m: m.setdefault('value',[]).append(val) if val not in m['value'] else None
+    else: entries.append({'name': name, 'value': [val]})
+upsert('tdx_pcr08', '$PCR8')
+upsert('mr_td',  '$TDX_MR_TD')
+upsert('rtmr_1', '$TDX_RTMR_1')
+upsert('rtmr_2', '$TDX_RTMR_2')
+upsert('xfam',   '$TDX_XFAM')
+print(json.dumps(entries))
+")
 oc create configmap trusteeconfig-rvps-reference-values \
     -n trustee-operator-system \
     --from-literal="reference-values.json=$NEW_REF" \
