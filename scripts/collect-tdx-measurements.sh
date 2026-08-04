@@ -14,6 +14,22 @@ set -euo pipefail
 NAMESPACE=${1:-seismic-interpretation}
 LABEL="app.kubernetes.io/name=seismic-app"
 
+# ── OSC version ───────────────────────────────────────────────────────────────
+
+OSC_VERSION=$(oc get csv -n openshift-sandboxed-containers-operator \
+  -o jsonpath='{.items[0].spec.version}' 2>/dev/null || true)
+
+if [ -z "$OSC_VERSION" ]; then
+  echo "WARNING: Could not determine OSC version (operator may not be installed)" >&2
+  OSC_VERSION="unknown"
+fi
+
+echo "OpenShift Sandboxed Containers version: $OSC_VERSION"
+echo ""
+echo "NOTE: TDX measurements (mr_td, rtmr_1, rtmr_2, xfam) are stable for a given OSC"
+echo "version. Re-run this script and update the Makefile whenever OSC is upgraded."
+echo ""
+
 # ── Find a running pod ────────────────────────────────────────────────────────
 
 POD=$(oc get pod -n "$NAMESPACE" -l "$LABEL" --no-headers 2>/dev/null \
@@ -71,10 +87,11 @@ fi
 
 # ── Parse the TDX quote and extract measurements ──────────────────────────────
 
-python3 - "$EVIDENCE_FILE" <<'PYTHON'
+python3 - "$EVIDENCE_FILE" "$OSC_VERSION" <<'PYTHON'
 import sys, json, base64
 
 evidence_file = sys.argv[1]
+osc_version   = sys.argv[2]
 with open(evidence_file) as f:
     raw = f.read().strip()
 
@@ -150,9 +167,16 @@ print(f"  xfam:   {xfam.hex()}")
 print(f"  rtmr_1: {rtmr1.hex()}")
 print(f"  rtmr_2: {rtmr2.hex()}")
 print()
-print("# Makefile variables — paste these into the Makefile and update the OSC version comment:")
+print(f"# ── Makefile variables (OSC {osc_version}) ─────────────────────────────────────────")
+print(f"# Paste into Makefile; re-run this script and update after an OSC upgrade.")
 print(f"TDX_MR_TD  ?= {mr_td.hex()}")
 print(f"TDX_XFAM   ?= {xfam.hex()}")
 print(f"TDX_RTMR_1 ?= {rtmr1.hex()}")
 print(f"TDX_RTMR_2 ?= {rtmr2.hex()}")
+print()
+print(f"# ── Environment exports for 'make setup-attestation' ────────────────────────")
+print(f"export TDX_MR_TD={mr_td.hex()}")
+print(f"export TDX_XFAM={xfam.hex()}")
+print(f"export TDX_RTMR_1={rtmr1.hex()}")
+print(f"export TDX_RTMR_2={rtmr2.hex()}")
 PYTHON
