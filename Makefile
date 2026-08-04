@@ -1119,8 +1119,8 @@ debug-attestation:
 	POD_NAME="ear-debug-$$$$"; \
 	echo "Starting debug pod $$POD_NAME (kata VM boot takes ~60s)..."; \
 	oc run $$POD_NAME -n $(NAMESPACE) --restart=Never \
-	    --image=$(APP_IMG) \
-	    --overrides="{\"metadata\":{\"annotations\":{\"io.katacontainers.config.hypervisor.cc_init_data\":\"$$INITDATA\",\"agent.guest_components_rest_api\":\"all\",\"io.katacontainers.config.hypervisor.default_memory\":\"24576\"}},\"spec\":{\"runtimeClassName\":\"$(KATA_RUNTIME_CLASS)\",\"containers\":[{\"name\":\"$$POD_NAME\",\"image\":\"$(APP_IMG)\",\"resources\":{\"limits\":{\"nvidia.com/pgpu\":\"1\",\"cpu\":\"8\",\"memory\":\"32Gi\"},\"requests\":{\"nvidia.com/pgpu\":\"1\",\"cpu\":\"4\",\"memory\":\"24Gi\"}}}]}}" \
+	    --image=registry.access.redhat.com/ubi9/ubi-minimal:latest \
+	    --overrides="{\"metadata\":{\"annotations\":{\"io.katacontainers.config.hypervisor.cc_init_data\":\"$$INITDATA\",\"io.katacontainers.config.hypervisor.kernel_params\":\"agent.guest_components_rest_api=all\"}},\"spec\":{\"runtimeClassName\":\"$(KATA_RUNTIME_CLASS)\",\"containers\":[{\"name\":\"$$POD_NAME\",\"image\":\"registry.access.redhat.com/ubi9/ubi-minimal:latest\",\"resources\":{\"limits\":{\"nvidia.com/pgpu\":\"1\"},\"requests\":{\"nvidia.com/pgpu\":\"1\"}}}]}}" \
 	    -- sleep 300 \
 	    || { oc delete pod $$POD_NAME -n $(NAMESPACE) --ignore-not-found; exit 1; }; \
 	oc wait pod/$$POD_NAME -n $(NAMESPACE) --for=condition=Ready --timeout=5m \
