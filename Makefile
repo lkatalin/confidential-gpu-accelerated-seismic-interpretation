@@ -1119,23 +1119,27 @@ debug-attestation:
 	POD_NAME="ear-debug-$$$$"; \
 	echo "Starting debug pod $$POD_NAME (kata VM boot takes ~60s)..."; \
 	oc run $$POD_NAME -n $(NAMESPACE) --restart=Never \
-	    --image=registry.access.redhat.com/ubi9/ubi-minimal:latest \
+	    --image=registry.access.redhat.com/ubi9/ubi:latest \
 	    --overrides="{\"metadata\":{\"annotations\":{\"io.katacontainers.config.hypervisor.cc_init_data\":\"$$INITDATA\",\"agent.guest_components_rest_api\":\"all\"}},\"spec\":{\"runtimeClassName\":\"$(KATA_RUNTIME_CLASS)\"}}" \
-	    -- sleep 180 \
+	    -- sleep 300 \
 	    || { oc delete pod $$POD_NAME -n $(NAMESPACE) --ignore-not-found; exit 1; }; \
 	oc wait pod/$$POD_NAME -n $(NAMESPACE) --for=condition=Ready --timeout=5m \
 	    || { echo "ERROR: pod did not become ready"; oc delete pod $$POD_NAME -n $(NAMESPACE) --ignore-not-found; exit 1; }; \
-	echo "Pod ready. Waiting for CDH to initialize (up to 2m)..."; \
-	DEADLINE=$$(( $$(date +%s) + 120 )); \
-	until oc exec -n $(NAMESPACE) $$POD_NAME -- \
-	        curl -sf "http://127.0.0.1:8006/aa/token?token_type=kbs" >/dev/null 2>&1; do \
+	echo "Pod ready. Waiting for CDH to initialize (up to 3m)..."; \
+	DEADLINE=$$(( $$(date +%s) + 180 )); \
+	LAST_RESPONSE=""; \
+	until LAST_RESPONSE=$$(oc exec -n $(NAMESPACE) $$POD_NAME -- \
+	        curl -s "http://127.0.0.1:8006/aa/token?token_type=kbs" 2>&1) \
+	        && echo "$$LAST_RESPONSE" | python3 -c "import sys,json; json.load(sys.stdin)" 2>/dev/null; do \
 	    if [ $$(date +%s) -ge $$DEADLINE ]; then \
-	        echo "ERROR: CDH did not become ready within 2 minutes"; \
+	        echo "ERROR: CDH did not become ready within 3 minutes."; \
+	        echo "Last response from CDH:"; echo "$$LAST_RESPONSE"; \
 	        oc delete pod $$POD_NAME -n $(NAMESPACE) --ignore-not-found; \
 	        exit 1; \
 	    fi; \
-	    sleep 3; \
+	    printf "."; sleep 5; \
 	done; \
+	echo ""; \
 	echo "Fetching EAR token..."; \
 	oc exec -n $(NAMESPACE) $$POD_NAME -- \
 	    curl -sf "http://127.0.0.1:8006/aa/token?token_type=kbs" \
