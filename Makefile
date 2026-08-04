@@ -115,6 +115,9 @@ help:
 	@echo "    setup-attestation        - Register model key, cosign key, and image policy with KBS;"
 	@echo "                               compute and register tdx_pcr08 RVPS reference value"
 	@echo "                               (requires NAMESPACE, MODEL_ENCRYPTION_KEY, model-owner-verification-keys/cosign.pub)"
+	@echo "    validate-trustee-certificate - Verify the cert in trusteeconfig-https-cert-secret matches what"
+	@echo "                               KBS is currently serving; fails if cert-manager has rotated the cert"
+	@echo "                               since the last 'make install' (which would break TLS in the kata VM)"
 	@echo ""
 	@echo "  Deploy:"
 	@echo "    install          - Install the app to the cluster via Helm (requires NAMESPACE;"
@@ -1108,3 +1111,33 @@ setup-attestation:
 	@echo "Waiting for Trustee to restart with updated configuration..."
 	@oc rollout status deployment/trustee-deployment -n trustee-operator-system --timeout=2m
 	@echo "Attestation secrets and RVPS reference values registered for namespace $(NAMESPACE)."
+
+.PHONY: validate-trustee-certificate
+validate-trustee-certificate:
+	@echo "Checking Trustee certificate consistency..."
+	@set -e; \
+	KBS_ROUTE=$$(oc get route kbs-route -n trustee-operator-system \
+	    -o jsonpath='{.spec.host}' 2>/dev/null); \
+	[ -n "$$KBS_ROUTE" ] || { \
+	    echo "ERROR: kbs-route not found — run make setup-trustee-in-cluster first"; exit 1; \
+	}; \
+	SECRET_CERT=$$(oc get secret trusteeconfig-https-cert-secret -n trustee-operator-system \
+	    -o jsonpath='{.data.certificate}' 2>/dev/null | base64 -d); \
+	[ -n "$$SECRET_CERT" ] || { \
+	    echo "ERROR: trusteeconfig-https-cert-secret not found or empty"; exit 1; \
+	}; \
+	SECRET_FP=$$(echo "$$SECRET_CERT" \
+	    | openssl x509 -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2); \
+	SERVED_FP=$$(echo \
+	    | openssl s_client -connect "$$KBS_ROUTE:443" -servername "$$KBS_ROUTE" 2>/dev/null \
+	    | openssl x509 -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2); \
+	echo "  Secret cert (trusteeconfig-https-cert-secret): $$SECRET_FP"; \
+	echo "  Served cert ($$KBS_ROUTE:443):                 $$SERVED_FP"; \
+	if [ "$$SECRET_FP" = "$$SERVED_FP" ]; then \
+	    echo "OK: certificates match — initdata will use the correct cert"; \
+	else \
+	    echo "MISMATCH: the secret and served certs differ."; \
+	    echo "  Cause: cert-manager may have rotated the certificate after 'make install' last ran."; \
+	    echo "  Fix:   run 'make install' to rebuild initdata with the current cert, then redeploy."; \
+	    exit 1; \
+	fi
