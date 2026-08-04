@@ -1078,35 +1078,51 @@ EOF
 ```
 5. Go to **Workloads → Pods** and wait for `trustee-deployment-*` to restart and return to **Running**
 
-#### Step 7: Register RVPS initdata binding
+#### Step 7: Register RVPS reference values
 
-Register the expected `tdx_pcr08` value so the cluster admin cannot tamper with the pod's initdata (KBS URL, image policy URI, namespace) without failing the configuration attestation check.
+The attestation policy requires five values in RVPS before it will release the model key:
+
+| Name | What it covers | Varies by |
+|---|---|---|
+| `tdx_pcr08` | Initdata hash — binds the pod to this KBS URL and namespace | Namespace + KBS cert |
+| `mr_td` | OVMF firmware measurement | OSC version |
+| `rtmr_1` | kata kernel + initrd measurement | OSC version |
+| `rtmr_2` | Additional boot measurement | OSC version |
+| `xfam` | QEMU CPU feature mask | OSC version / runtime class |
+
+`tdx_pcr08` is computed at registration time from your namespace and KBS certificate. The four TDX hardware measurements are stable for a given OSC version — the Makefile already contains the correct values for OSC **1.3.1** (see the `TDX_MR_TD` block near `KATA_RUNTIME_CLASS` in the Makefile).
+
+```bash
+NAMESPACE=<your deployment namespace, e.g. seismic-interpretation>
+make setup-attestation NAMESPACE=$NAMESPACE
+```
+
+Or manually (equivalent to the above):
 
 ```bash
 NAMESPACE=<your deployment namespace, e.g. seismic-interpretation>
 KBS_CERT=$(oc get secret trusteeconfig-https-cert-secret -n trustee-operator-system \
     -o jsonpath='{.data.certificate}' | base64 -d)
-PCR8=$(echo "$KBS_CERT" | python3 scripts/build-initdata.py "https://kbs-service.trustee-operator-system.svc.cluster.local:8080" "$NAMESPACE" --pcr8-only)
+PCR8=$(echo "$KBS_CERT" | python3 scripts/build-initdata.py \
+    "https://kbs-service.trustee-operator-system.svc.cluster.local:8080" \
+    "$NAMESPACE" --pcr8-only)
 echo "tdx_pcr08: $PCR8"
 
-# Read the current reference values and append this namespace's tdx_pcr08.
-# Running this for a second namespace adds a second value to the allowlist
-# without removing the first — each namespace produces a distinct PCR8.
+# TDX hardware reference values for OSC 1.3.1 / kata-cc-nvidia-gpu.
+# If you are running a different OSC version, see the note below.
+TDX_MR_TD=27fb849fb05653add8be4b8c5b2793e66d1e25773a5c6f80dabbc10a5cb18bc40b7d5caaaf299e3a200f7018cdaa6f74
+TDX_XFAM=e702060000000000
+TDX_RTMR_1=93a576941cfe92d6427106944e475e96b702d1049975b6c64512345857d69dbab8d14c5f3dc88931cc582c9974fae8cc
+TDX_RTMR_2=e882c8d18de74cc30d506d56962e5d3eb33c98e6c25f0329857c29f03a48fb17b6c6b1e2acc4741b305a6656a5f7d6c9
+
+# Upsert all five entries. Running for a second namespace adds that namespace's
+# tdx_pcr08 without removing existing values — each namespace has a distinct PCR8.
 CURRENT_REF=$(oc get configmap conf-seismic-rvps-reference-values \
     -n trustee-operator-system \
     -o jsonpath='{.data.reference-values\.json}')
-NEW_REF=$(python3 -c "
-import json, sys
-cur, pcr = sys.argv[1], sys.argv[2]
-entries = json.loads(cur) if cur.strip() else []
-m = [e for e in entries if e.get('name') == 'tdx_pcr08']
-if m:
-    if pcr not in m[0]['value']:
-        m[0]['value'].append(pcr)
-else:
-    entries.append({'name': 'tdx_pcr08', 'value': [pcr]})
-print(json.dumps(entries))
-" "$CURRENT_REF" "$PCR8")
+NEW_REF=$(TDX_MR_TD="$TDX_MR_TD" TDX_XFAM="$TDX_XFAM" \
+    TDX_RTMR_1="$TDX_RTMR_1" TDX_RTMR_2="$TDX_RTMR_2" \
+    python3 scripts/update-rvps.py "$CURRENT_REF" "$PCR8")
 oc create configmap conf-seismic-rvps-reference-values \
     -n trustee-operator-system \
     --from-literal="reference-values.json=$NEW_REF" \
@@ -1114,6 +1130,12 @@ oc create configmap conf-seismic-rvps-reference-values \
 oc rollout restart deployment/trustee-deployment -n trustee-operator-system
 oc rollout status deployment/trustee-deployment -n trustee-operator-system --timeout=2m
 ```
+
+> **Using a different OSC version?** The OVMF firmware and kata kernel measurements change with each OSC release, so the values in the Makefile will not match your environment. To collect the correct values:
+> 1. Run `./scripts/collect-tdx-measurements.sh $NAMESPACE` — it launches a temporary kata-cc probe pod, extracts the measurements, and deletes the pod when done.
+> 2. The script prints the OSC version, a Makefile variable block, and an `export` block.
+> 3. Paste the Makefile block into the Makefile (near `KATA_RUNTIME_CLASS`) and update the OSC version comment.
+> 4. Source the `export` lines into your shell, then run `make setup-attestation NAMESPACE=$NAMESPACE` as normal.
 
 #### Step 8: Register app-specific secrets with KBS
 
@@ -1172,7 +1194,7 @@ NAMESPACE=<your deployment namespace, e.g. seismic-interpretation>
 make setup-attestation NAMESPACE=$NAMESPACE
 ```
 
-> `make setup-intel-tee` (or `make setup-amd-tee`) runs the hardware prerequisite kernel parameter step. `make setup-kata` runs Part 1 Steps 1–2. `make setup-trustee-in-cluster` runs Trustee setup Steps 1–6 automatically (including Step 2a if `NRAS_API_KEY` is supplied). `make setup-attestation` performs Trustee setup Steps 7 and 8: the RVPS `tdx_pcr08` ConfigMap update followed by the three KBS secret registrations.
+> `make setup-intel-tee` (or `make setup-amd-tee`) runs the hardware prerequisite kernel parameter step. `make setup-kata` runs Part 1 Steps 1–2. `make setup-trustee-in-cluster` runs Trustee setup Steps 1–6 automatically (including Step 2a if `NRAS_API_KEY` is supplied). `make setup-attestation` performs Trustee setup Steps 7b and 8: it computes and registers `tdx_pcr08` plus any `TDX_MR_TD` / `TDX_XFAM` / `TDX_RTMR_1` / `TDX_RTMR_2` values exported in the shell, then registers the three KBS secrets. Export the TDX hardware values from Step 7a before running it to register all five RVPS entries in a single pass.
 
 ---
 

@@ -1,18 +1,21 @@
 #!/bin/bash
-# Collect TDX hardware measurement values from a running kata-cc pod.
+# Collect TDX hardware measurement values by launching a temporary kata-cc probe pod.
 #
 # mr_td, rtmr_1, rtmr_2, and xfam are stable for a given OSC version and must
 # be registered in RVPS so the attestation policy produces affirming scores.
 # Register them once; re-run only after an OSC upgrade that changes the kata
 # firmware or kernel.
 #
-# Usage: collect-tdx-measurements.sh [NAMESPACE]
-#   NAMESPACE defaults to seismic-interpretation
-#   The pod must be running (even if looping on CDH key-fetch retries).
+# Usage: collect-tdx-measurements.sh [NAMESPACE [KATA_RUNTIME_CLASS]]
+#   NAMESPACE          defaults to seismic-interpretation
+#   KATA_RUNTIME_CLASS defaults to kata-cc-nvidia-gpu
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NAMESPACE=${1:-seismic-interpretation}
-LABEL="app.kubernetes.io/name=seismic-app"
+KATA_RUNTIME_CLASS=${2:-kata-cc-nvidia-gpu}
+PROBE_IMAGE="registry.access.redhat.com/ubi9/ubi:latest"
+PROBE_POD="tdx-measure-$$"
 
 # ── OSC version ───────────────────────────────────────────────────────────────
 
@@ -30,49 +33,68 @@ echo "NOTE: TDX measurements (mr_td, rtmr_1, rtmr_2, xfam) are stable for a give
 echo "version. Re-run this script and update the Makefile whenever OSC is upgraded."
 echo ""
 
-# ── Find a running pod ────────────────────────────────────────────────────────
+# ── Cleanup trap ──────────────────────────────────────────────────────────────
 
-POD=$(oc get pod -n "$NAMESPACE" -l "$LABEL" --no-headers 2>/dev/null \
-  | awk '$3 ~ /Running|Init/ {print $1; exit}')
+EVIDENCE_FILE=$(mktemp /tmp/tdx-evidence.XXXXXX.json)
 
-if [ -z "$POD" ]; then
-  echo "ERROR: No Running/Init pod with label $LABEL in namespace $NAMESPACE" >&2
-  echo "       Deploy the app first ('make install'); it will retry CDH in a loop." >&2
-  exit 1
+cleanup() {
+  rm -f "$EVIDENCE_FILE"
+  echo "Deleting probe pod $PROBE_POD..."
+  oc delete pod "$PROBE_POD" -n "$NAMESPACE" \
+    --grace-period=0 --ignore-not-found 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# ── Launch probe pod ──────────────────────────────────────────────────────────
+# Build initdata so CDH starts properly inside the probe kata VM and the AA
+# evidence endpoint is available.  Falls back to empty if Trustee is not yet
+# installed (the AA can still generate the TDX quote without KBS connectivity).
+
+echo "Launching temporary kata-cc probe pod: $PROBE_POD"
+
+INITDATA=""
+if oc get secret trusteeconfig-https-cert-secret \
+     -n trustee-operator-system &>/dev/null; then
+  INITDATA=$(oc get secret trusteeconfig-https-cert-secret \
+    -n trustee-operator-system \
+    -o jsonpath='{.data.certificate}' | base64 -d \
+    | python3 "$SCRIPT_DIR/build-initdata.py" \
+        "https://kbs-service.trustee-operator-system.svc.cluster.local:8080" \
+        "$NAMESPACE" 2>/dev/null || true)
 fi
 
-echo "Pod: $POD"
+PROBE_MANIFEST=$(mktemp /tmp/tdx-probe-XXXXXX.yaml)
+# Write to a temp file — the initdata value is too long for --overrides
+cat > "$PROBE_MANIFEST" <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${PROBE_POD}
+  namespace: ${NAMESPACE}
+  annotations:
+    io.katacontainers.config.hypervisor.cc_init_data: "${INITDATA}"
+spec:
+  runtimeClassName: ${KATA_RUNTIME_CLASS}
+  restartPolicy: Never
+  containers:
+  - name: probe
+    image: ${PROBE_IMAGE}
+    command: ["sleep", "120"]
+EOF
+oc apply -f "$PROBE_MANIFEST"
+rm -f "$PROBE_MANIFEST"
 
-# ── Find a container we can exec into ────────────────────────────────────────
-# model-decrypt is an init container that loops waiting for the CDH key.
-# If init has already completed, app is the running container.
-
-CONTAINER=""
-for c in model-decrypt app; do
-  if oc exec -n "$NAMESPACE" "$POD" -c "$c" -- true 2>/dev/null; then
-    CONTAINER="$c"
-    break
-  fi
-done
-
-if [ -z "$CONTAINER" ]; then
-  echo "ERROR: Could not exec into any container in pod $POD" >&2
-  echo "       Ensure ExecProcessRequest := true in the initdata policy." >&2
-  exit 1
-fi
-
-echo "Container: $CONTAINER"
-echo ""
-echo "Querying attestation agent evidence endpoint..."
+echo "Waiting for probe pod to be ready (kata VMs can take up to 2 minutes)..."
+oc wait pod "$PROBE_POD" -n "$NAMESPACE" \
+  --for=condition=Ready --timeout=120s
 
 # ── Fetch the attestation evidence ───────────────────────────────────────────
 
-EVIDENCE_FILE=$(mktemp /tmp/tdx-evidence.XXXXXX.json)
-trap 'rm -f "$EVIDENCE_FILE"' EXIT
+echo "Querying attestation agent evidence endpoint..."
 
 RUNTIME_DATA=$(printf '%s' "collect-tdx-measurements" | base64 | tr -d '=')
 
-if ! oc exec -n "$NAMESPACE" "$POD" -c "$CONTAINER" -- \
+if ! oc exec -n "$NAMESPACE" "$PROBE_POD" -c probe -- \
      curl -sf "http://127.0.0.1:8006/aa/evidence?runtime_data=$RUNTIME_DATA" \
      > "$EVIDENCE_FILE" 2>/dev/null; then
   echo "ERROR: AA evidence endpoint did not respond." >&2
@@ -142,7 +164,7 @@ if len(quote) < MIN_LEN:
 #     MR_SEAM           48 bytes
 #     MR_SIGNER_SEAM    48 bytes
 #     SEAM_ATTRIBUTES    8 bytes
-#     TD_ATTRIBUTES      8 bytes   ← td_attributes
+#     TD_ATTRIBUTES      8 bytes
 #     XFAM               8 bytes   ← xfam
 #     MRTD              48 bytes   ← mr_td
 #     MR_CONFIG_ID      48 bytes
@@ -167,14 +189,14 @@ print(f"  xfam:   {xfam.hex()}")
 print(f"  rtmr_1: {rtmr1.hex()}")
 print(f"  rtmr_2: {rtmr2.hex()}")
 print()
-print(f"# ── Makefile variables (OSC {osc_version}) ─────────────────────────────────────────")
+print(f"# ── Makefile variables (OSC {osc_version}) ──────────────────────────────────────")
 print(f"# Paste into Makefile; re-run this script and update after an OSC upgrade.")
 print(f"TDX_MR_TD  ?= {mr_td.hex()}")
 print(f"TDX_XFAM   ?= {xfam.hex()}")
 print(f"TDX_RTMR_1 ?= {rtmr1.hex()}")
 print(f"TDX_RTMR_2 ?= {rtmr2.hex()}")
 print()
-print(f"# ── Environment exports for 'make setup-attestation' ────────────────────────")
+print(f"# ── Environment exports for 'make setup-attestation' ────────────────────")
 print(f"export TDX_MR_TD={mr_td.hex()}")
 print(f"export TDX_XFAM={xfam.hex()}")
 print(f"export TDX_RTMR_1={rtmr1.hex()}")

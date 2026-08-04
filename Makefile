@@ -32,6 +32,12 @@ NRAS_API_KEY        ?=
 INTEL_API_KEY       ?=
 RUNTIME_CLASS       ?= nvidia
 KATA_RUNTIME_CLASS    ?= kata-cc-nvidia-gpu
+# TDX infrastructure reference values for OSC 1.3.1 / kata-cc-nvidia-gpu.
+# Re-run scripts/collect-tdx-measurements.sh and update these after an OSC upgrade.
+TDX_MR_TD  ?= 27fb849fb05653add8be4b8c5b2793e66d1e25773a5c6f80dabbc10a5cb18bc40b7d5caaaf299e3a200f7018cdaa6f74
+TDX_XFAM   ?= e702060000000000
+TDX_RTMR_1 ?= 93a576941cfe92d6427106944e475e96b702d1049975b6c64512345857d69dbab8d14c5f3dc88931cc582c9974fae8cc
+TDX_RTMR_2 ?= e882c8d18de74cc30d506d56962e5d3eb33c98e6c25f0329857c29f03a48fb17b6c6b1e2acc4741b305a6656a5f7d6c9
 # Space-separated list of node names to label nvidia.com/gpu.workload.config=vm-passthrough.
 # Nodes in this list stop advertising nvidia.com/gpu and instead advertise nvidia.com/pgpu.
 # Unlabeled GPU nodes continue serving standard CUDA workloads unchanged.
@@ -143,6 +149,10 @@ help:
 	@echo "  MODEL_IMG              - Full image ref (default: \$${REGISTRY}/\$${QUAY_REPO}:\$${QUAY_TAG})"
 	@echo "  MODEL_ENCRYPTION_KEY   - AES-256-CBC key (required for build-modelcar and setup-attestation)"
 	@echo "  KATA_RUNTIME_CLASS     - kata runtimeClass for install (default: kata-cc-nvidia-gpu)"
+	@echo "  TDX_MR_TD              - TDX OVMF firmware measurement (stable per OSC version)."
+	@echo "  TDX_XFAM               -   Collect all four with: scripts/collect-tdx-measurements.sh"
+	@echo "  TDX_RTMR_1             -   Export the printed values before running setup-attestation."
+	@echo "  TDX_RTMR_2             -   Without these, attestation will fail after 'make install'."
 	@echo "  GPU_PASSTHROUGH_NODES  - Space-separated node names to label for kata VM passthrough during setup-kata."
 	@echo "                           Labeled nodes stop advertising nvidia.com/gpu and advertise nvidia.com/pgpu instead."
 	@echo "                           Unlabeled GPU nodes continue serving standard CUDA workloads unchanged."
@@ -1078,16 +1088,28 @@ setup-attestation:
 	@[ -n "$$NAMESPACE" ] || (echo "Error: NAMESPACE is not set"; exit 1)
 	@[ -n "$$MODEL_ENCRYPTION_KEY" ] || (echo "Error: MODEL_ENCRYPTION_KEY is not set"; exit 1)
 	@[ -f model-owner-verification-keys/cosign.pub ] || (echo "Error: model-owner-verification-keys/cosign.pub not found — run 'make generate-model-owner-keys' first"; exit 1)
+	@if [ -z "$(TDX_MR_TD)" ]; then \
+	    echo "WARNING: TDX_MR_TD/TDX_XFAM/TDX_RTMR_1/TDX_RTMR_2 are not set."; \
+	    echo "         Only tdx_pcr08 will be registered — attestation will fail until"; \
+	    echo "         you run scripts/collect-tdx-measurements.sh, export the printed"; \
+	    echo "         values, and re-run 'make setup-attestation'."; \
+	fi
 	@echo "Computing tdx_pcr08 (initdata configuration binding) for namespace $(NAMESPACE)..."
 	@set -e; \
 	KBS_CERT=$$(oc get secret trusteeconfig-https-cert-secret -n trustee-operator-system \
 	    -o jsonpath='{.data.certificate}' | base64 -d); \
 	PCR8=$$(echo "$$KBS_CERT" | python3 scripts/build-initdata.py "https://kbs-service.trustee-operator-system.svc.cluster.local:8080" "$(NAMESPACE)" --pcr8-only); \
 	echo "tdx_pcr08: $$PCR8"; \
+	[ -n "$(TDX_MR_TD)" ] && echo "mr_td:     $(TDX_MR_TD)" || true; \
+	[ -n "$(TDX_XFAM)" ]  && echo "xfam:      $(TDX_XFAM)"  || true; \
+	[ -n "$(TDX_RTMR_1)" ] && echo "rtmr_1:    $(TDX_RTMR_1)" || true; \
+	[ -n "$(TDX_RTMR_2)" ] && echo "rtmr_2:    $(TDX_RTMR_2)" || true; \
 	CURRENT_REF=$$(oc get configmap conf-seismic-rvps-reference-values \
 	    -n trustee-operator-system \
 	    -o jsonpath='{.data.reference-values\.json}'); \
-	NEW_REF=$$(python3 -c "import json,sys; cur,pcr=sys.argv[1],sys.argv[2]; entries=(json.loads(cur) if cur.strip() else []); m=[e for e in entries if e.get('name')=='tdx_pcr08']; m[0]['value'].append(pcr) if m and pcr not in m[0]['value'] else (None if m else entries.append({'name':'tdx_pcr08','value':[pcr]})); print(json.dumps(entries))" "$$CURRENT_REF" "$$PCR8"); \
+	NEW_REF=$$(TDX_MR_TD="$(TDX_MR_TD)" TDX_XFAM="$(TDX_XFAM)" \
+	    TDX_RTMR_1="$(TDX_RTMR_1)" TDX_RTMR_2="$(TDX_RTMR_2)" \
+	    python3 scripts/update-rvps.py "$$CURRENT_REF" "$$PCR8"); \
 	oc create configmap conf-seismic-rvps-reference-values \
 	    -n trustee-operator-system \
 	    --from-literal="reference-values.json=$$NEW_REF" \
