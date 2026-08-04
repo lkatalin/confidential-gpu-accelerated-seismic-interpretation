@@ -124,6 +124,10 @@ help:
 	@echo "    validate-trustee-certificate - Verify the cert in trusteeconfig-https-cert-secret matches what"
 	@echo "                               KBS is currently serving; fails if cert-manager has rotated the cert"
 	@echo "                               since the last 'make install' (which would break TLS in the kata VM)"
+	@echo "    debug-attestation        - Start a temporary kata pod, fetch the live EAR token from CDH,"
+	@echo "                               and decode trust claims (executables/hardware/configuration per submod)"
+	@echo "                               highlighting any non-affirming values that cause PolicyDeny"
+	@echo "                               (requires NAMESPACE and seismic-app deployment to exist)"
 	@echo ""
 	@echo "  Deploy:"
 	@echo "    install          - Install the app to the cluster via Helm (requires NAMESPACE;"
@@ -1098,6 +1102,46 @@ setup-attestation:
 	@oc rollout restart deployment/trustee-deployment -n trustee-operator-system
 	@oc rollout status deployment/trustee-deployment -n trustee-operator-system --timeout=2m
 	@echo "Attestation secrets and RVPS reference values registered for namespace $(NAMESPACE)."
+
+.PHONY: debug-attestation
+debug-attestation:
+	@[ -n "$$NAMESPACE" ] || (echo "Error: NAMESPACE is not set"; exit 1)
+	@set -e; \
+	echo "=== Attestation Debug: namespace=$(NAMESPACE) ==="; \
+	INITDATA=$$(oc get deployment seismic-app -n $(NAMESPACE) \
+	    -o jsonpath='{.spec.template.metadata.annotations.io\.katacontainers\.config\.hypervisor\.cc_init_data}' \
+	    2>/dev/null); \
+	[ -n "$$INITDATA" ] || { \
+	    echo "ERROR: seismic-app deployment not found in namespace $(NAMESPACE)."; \
+	    echo "       Run 'make install NAMESPACE=$(NAMESPACE)' first."; \
+	    exit 1; \
+	}; \
+	POD_NAME="ear-debug-$$$$"; \
+	echo "Starting debug pod $$POD_NAME (kata VM boot takes ~60s)..."; \
+	oc run $$POD_NAME -n $(NAMESPACE) --restart=Never \
+	    --image=$(APP_IMG) \
+	    --overrides="{\"metadata\":{\"annotations\":{\"io.katacontainers.config.hypervisor.cc_init_data\":\"$$INITDATA\"}},\"spec\":{\"runtimeClassName\":\"$(KATA_RUNTIME_CLASS)\"}}" \
+	    -- sleep 180 \
+	    || { oc delete pod $$POD_NAME -n $(NAMESPACE) --ignore-not-found; exit 1; }; \
+	oc wait pod/$$POD_NAME -n $(NAMESPACE) --for=condition=Ready --timeout=5m \
+	    || { echo "ERROR: pod did not become ready"; oc delete pod $$POD_NAME -n $(NAMESPACE) --ignore-not-found; exit 1; }; \
+	echo "Pod ready. Waiting for CDH to initialize (up to 2m)..."; \
+	DEADLINE=$$(( $$(date +%s) + 120 )); \
+	until oc exec -n $(NAMESPACE) $$POD_NAME -- \
+	        curl -sf "http://127.0.0.1:8006/aa/token?token_type=kbs" >/dev/null 2>&1; do \
+	    if [ $$(date +%s) -ge $$DEADLINE ]; then \
+	        echo "ERROR: CDH did not become ready within 2 minutes"; \
+	        oc delete pod $$POD_NAME -n $(NAMESPACE) --ignore-not-found; \
+	        exit 1; \
+	    fi; \
+	    sleep 3; \
+	done; \
+	echo "Fetching EAR token..."; \
+	oc exec -n $(NAMESPACE) $$POD_NAME -- \
+	    curl -sf "http://127.0.0.1:8006/aa/token?token_type=kbs" \
+	    | python3 scripts/decode-ear-token.py; \
+	oc delete pod $$POD_NAME -n $(NAMESPACE) --ignore-not-found; \
+	echo "Debug pod deleted."
 
 .PHONY: validate-trustee-certificate
 validate-trustee-certificate:
