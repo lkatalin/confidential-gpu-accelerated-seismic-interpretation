@@ -1120,7 +1120,7 @@ debug-attestation:
 	echo "Starting debug pod $$POD_NAME (kata VM boot takes ~60s)..."; \
 	oc run $$POD_NAME -n $(NAMESPACE) --restart=Never \
 	    --image=registry.access.redhat.com/ubi9/ubi-minimal:latest \
-	    --overrides="{\"metadata\":{\"annotations\":{\"io.katacontainers.config.hypervisor.cc_init_data\":\"$$INITDATA\"}},\"spec\":{\"runtimeClassName\":\"$(KATA_RUNTIME_CLASS)\"}}" \
+	    --overrides="{\"metadata\":{\"annotations\":{\"io.katacontainers.config.hypervisor.cc_init_data\":\"$$INITDATA\",\"agent.guest_components_rest_api\":\"all\"}},\"spec\":{\"runtimeClassName\":\"$(KATA_RUNTIME_CLASS)\"}}" \
 	    -- sleep 180 \
 	    || { oc delete pod $$POD_NAME -n $(NAMESPACE) --ignore-not-found; exit 1; }; \
 	oc wait pod/$$POD_NAME -n $(NAMESPACE) --for=condition=Ready --timeout=5m \
