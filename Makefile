@@ -516,8 +516,8 @@ install:
 	}; \
 	KBS_SVC_URL="https://kbs-service.trustee-operator-system.svc.cluster.local:8080"; \
 	echo "Building initdata blob (KBS URL: $$KBS_SVC_URL)..."; \
-	INITDATA=$$(oc get secret trustee-tls-cert -n trustee-operator-system \
-	    -o jsonpath='{.data.tls\.crt}' | base64 -d \
+	INITDATA=$$(oc get secret trusteeconfig-https-cert-secret -n trustee-operator-system \
+	    -o jsonpath='{.data.certificate}' | base64 -d \
 	    | python3 scripts/build-initdata.py "$$KBS_SVC_URL" "$(NAMESPACE)"); \
 	helm upgrade --install seismic-app helm/ \
 	    -n $(NAMESPACE) \
@@ -1077,8 +1077,8 @@ setup-attestation:
 	@[ -f model-owner-verification-keys/cosign.pub ] || (echo "Error: model-owner-verification-keys/cosign.pub not found — run 'make generate-model-owner-keys' first"; exit 1)
 	@echo "Computing tdx_pcr08 (initdata configuration binding) for namespace $(NAMESPACE)..."
 	@set -e; \
-	KBS_CERT=$$(oc get secret trustee-tls-cert -n trustee-operator-system \
-	    -o jsonpath='{.data.tls\.crt}' | base64 -d); \
+	KBS_CERT=$$(oc get secret trusteeconfig-https-cert-secret -n trustee-operator-system \
+	    -o jsonpath='{.data.certificate}' | base64 -d); \
 	PCR8=$$(echo "$$KBS_CERT" | python3 scripts/build-initdata.py "https://kbs-service.trustee-operator-system.svc.cluster.local:8080" "$(NAMESPACE)" --pcr8-only); \
 	echo "tdx_pcr08: $$PCR8"; \
 	CURRENT_REF=$$(oc get configmap conf-seismic-rvps-reference-values \

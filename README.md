@@ -966,7 +966,7 @@ bash scripts/apply-kbs-certs.sh
 
 The script creates a self-signed `Issuer`, an RSA `Certificate` for KBS HTTPS (stored as `trustee-tls-cert`), and an ECDSA `Certificate` for attestation token verification (stored as `trustee-token-cert`), then waits for cert-manager to issue both.
 
-The `trustee-tls-cert` certificate is also embedded in the initdata blob by `make install` — the Confidential Data Hub inside the kata VM uses it to verify the KBS TLS connection.
+The Trustee operator derives a `trusteeconfig-https-cert-secret` from `trustee-tls-cert` and mounts that derived secret into KBS. `make install` embeds the certificate from `trusteeconfig-https-cert-secret` (key: `certificate`) in the initdata blob — the Confidential Data Hub inside the kata VM uses it to verify the KBS TLS connection. Do not read from `trustee-tls-cert` directly for this purpose; the two secrets contain different certificates.
 
 #### Step 4: Deploy KBS
 
@@ -1084,8 +1084,8 @@ Register the expected `tdx_pcr08` value so the cluster admin cannot tamper with 
 
 ```bash
 NAMESPACE=<your deployment namespace, e.g. seismic-interpretation>
-KBS_CERT=$(oc get secret trustee-tls-cert -n trustee-operator-system \
-    -o jsonpath='{.data.tls\.crt}' | base64 -d)
+KBS_CERT=$(oc get secret trusteeconfig-https-cert-secret -n trustee-operator-system \
+    -o jsonpath='{.data.certificate}' | base64 -d)
 PCR8=$(echo "$KBS_CERT" | python3 scripts/build-initdata.py "https://kbs-service.trustee-operator-system.svc.cluster.local:8080" "$NAMESPACE" --pcr8-only)
 echo "tdx_pcr08: $PCR8"
 
