@@ -1117,13 +1117,13 @@ TDX_RTMR_2=e882c8d18de74cc30d506d56962e5d3eb33c98e6c25f0329857c29f03a48fb17b6c6b
 
 # Upsert all five entries. Running for a second namespace adds that namespace's
 # tdx_pcr08 without removing existing values — each namespace has a distinct PCR8.
-CURRENT_REF=$(oc get configmap conf-seismic-rvps-reference-values \
+CURRENT_REF=$(oc get configmap trusteeconfig-rvps-reference-values \
     -n trustee-operator-system \
     -o jsonpath='{.data.reference-values\.json}')
 NEW_REF=$(TDX_MR_TD="$TDX_MR_TD" TDX_XFAM="$TDX_XFAM" \
     TDX_RTMR_1="$TDX_RTMR_1" TDX_RTMR_2="$TDX_RTMR_2" \
     python3 scripts/update-rvps.py "$CURRENT_REF" "$PCR8")
-oc create configmap conf-seismic-rvps-reference-values \
+oc create configmap trusteeconfig-rvps-reference-values \
     -n trustee-operator-system \
     --from-literal="reference-values.json=$NEW_REF" \
     --dry-run=client -o yaml | oc apply -f -

@@ -46,22 +46,31 @@ cleanup() {
 trap cleanup EXIT
 
 # ── Launch probe pod ──────────────────────────────────────────────────────────
-# Build initdata so CDH starts properly inside the probe kata VM and the AA
-# evidence endpoint is available.  Falls back to empty if Trustee is not yet
-# installed (the AA can still generate the TDX quote without KBS connectivity).
+# CDH inside the kata VM requires valid initdata to start its HTTP server on
+# port 8006.  Without it the AA evidence endpoint will not be reachable.
 
 echo "Launching temporary kata-cc probe pod: $PROBE_POD"
 
-INITDATA=""
-if oc get secret trusteeconfig-https-cert-secret \
-     -n trustee-operator-system &>/dev/null; then
-  INITDATA=$(oc get secret trusteeconfig-https-cert-secret \
-    -n trustee-operator-system \
-    -o jsonpath='{.data.certificate}' | base64 -d \
-    | python3 "$SCRIPT_DIR/build-initdata.py" \
-        "https://kbs-service.trustee-operator-system.svc.cluster.local:8080" \
-        "$NAMESPACE" 2>/dev/null || true)
+if ! oc get secret trusteeconfig-https-cert-secret \
+       -n trustee-operator-system &>/dev/null; then
+  echo "ERROR: trusteeconfig-https-cert-secret not found in trustee-operator-system." >&2
+  echo "       Run 'make setup-trustee-in-cluster' before collecting measurements." >&2
+  exit 1
 fi
+
+INITDATA=$(oc get secret trusteeconfig-https-cert-secret \
+  -n trustee-operator-system \
+  -o jsonpath='{.data.certificate}' | base64 -d \
+  | python3 "$SCRIPT_DIR/build-initdata.py" \
+      "https://kbs-service.trustee-operator-system.svc.cluster.local:8080" \
+      "$NAMESPACE")
+
+if [ -z "$INITDATA" ]; then
+  echo "ERROR: Failed to compute initdata blob." >&2
+  exit 1
+fi
+
+echo "Initdata computed (${#INITDATA} chars)."
 
 PROBE_MANIFEST=$(mktemp /tmp/tdx-probe-XXXXXX.yaml)
 # Write to a temp file — the initdata value is too long for --overrides
@@ -94,16 +103,38 @@ echo "Querying attestation agent evidence endpoint..."
 
 RUNTIME_DATA=$(printf '%s' "collect-tdx-measurements" | base64 | tr -d '=')
 
-if ! oc exec -n "$NAMESPACE" "$PROBE_POD" -c probe -- \
-     curl -sf "http://127.0.0.1:8006/aa/evidence?runtime_data=$RUNTIME_DATA" \
-     > "$EVIDENCE_FILE" 2>/dev/null; then
-  echo "ERROR: AA evidence endpoint did not respond." >&2
+# First check whether CDH is reachable at all on port 8006.
+CDH_STATUS=$(oc exec -n "$NAMESPACE" "$PROBE_POD" -c probe -- \
+  curl -s -o /dev/null -w "%{http_code}" \
+  "http://127.0.0.1:8006/aa/evidence?runtime_data=$RUNTIME_DATA" \
+  2>/dev/null || echo "unreachable")
+
+if [ "$CDH_STATUS" = "200" ]; then
+  oc exec -n "$NAMESPACE" "$PROBE_POD" -c probe -- \
+    curl -sf "http://127.0.0.1:8006/aa/evidence?runtime_data=$RUNTIME_DATA" \
+    > "$EVIDENCE_FILE" 2>/dev/null
+else
+  echo "ERROR: /aa/evidence returned HTTP $CDH_STATUS." >&2
   echo "" >&2
-  echo "Fallback — enable debug logging in Trustee to read measurements from AS logs:" >&2
-  echo "  oc set env deployment/trustee-deployment -n trustee-operator-system \\" >&2
-  echo "    RUST_LOG=attestation_service=debug,rvps=debug" >&2
-  echo "  oc logs -n trustee-operator-system -l app=trustee -f \\" >&2
-  echo "    | grep -E 'mr_td|rtmr|xfam'" >&2
+  if [ "$CDH_STATUS" = "unreachable" ]; then
+    echo "  CDH is not listening on port 8006 — it may not have started." >&2
+    echo "  Check that Trustee is installed and the initdata annotation was set." >&2
+  elif [ "$CDH_STATUS" = "404" ] || [ "$CDH_STATUS" = "405" ]; then
+    echo "  The /aa/evidence endpoint is not implemented in this CDH version." >&2
+    echo "  It was added in a later release; OSC 1.3.1 does not include it." >&2
+    echo "  If your Makefile already has TDX_MR_TD values for your OSC version," >&2
+    echo "  no further action is needed — the values are already correct." >&2
+  fi
+  echo "" >&2
+  echo "  Fallback — enable AS debug logging, trigger an attestation, and parse the logs:" >&2
+  echo "    oc set env deployment/trustee-deployment -n trustee-operator-system \\" >&2
+  echo "      RUST_LOG=attestation_service=debug" >&2
+  echo "    oc rollout status deployment/trustee-deployment \\" >&2
+  echo "      -n trustee-operator-system --timeout=2m" >&2
+  echo "    # From inside a running kata pod, trigger CDH to contact KBS:" >&2
+  echo "    #   curl -s http://127.0.0.1:8006/cdh/resource/\$NAMESPACE/conf-seismic-model-key/key" >&2
+  echo "    oc logs -n trustee-operator-system -l app=trustee --since=60s \\" >&2
+  echo "      | grep -E '\"mr_td\"|\"rtmr_1\"|\"rtmr_2\"|\"xfam\"'" >&2
   exit 1
 fi
 
