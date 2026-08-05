@@ -1326,7 +1326,7 @@ Encrypts `dutchf3_unet_final.pth` with AES-256-CBC inside the container build (t
 Pushes the image to quay.io.
 
 **`make sign-modelcar`**
-Signs the pushed ModelCar image with your model owner private key for supply chain integrity — proving the model artifact has not been tampered with between publication and use. The same key is also used to sign the application image (see [Optional: Build and publish your own application](#optional-build-and-publish-your-own-application)), which is the signature that KBS verifies during attestation to decide whether to release the decryption key. Signing uses `--tlog-upload=false` so the signature is not recorded in the public Rekor transparency log — this is required for compatibility with image-rs's `keyPath`-only policy and avoids publishing signing events for private images to a public ledger.
+Signs the pushed ModelCar image with your model owner private key for supply chain integrity — proving the model artifact has not been tampered with between publication and use. The same key is also used to sign the application image (see [Optional: Build and publish your own application](#optional-build-and-publish-your-own-application)), which is the signature that KBS verifies during attestation to decide whether to release the decryption key. Signing uses a `--signing-config` with no Rekor URLs so the signature is not recorded in the public Rekor transparency log — this is required for compatibility with image-rs's `keyPath`-only policy and avoids publishing signing events for private images to a public ledger.
 
 #### After publishing
 
@@ -1394,7 +1394,7 @@ Pushes the image to quay.io. The target registry and repository are controlled b
 make model-owner-sign-app-container
 ```
 
-Signs the pushed application image with the model owner private key (`model-owner-verification-keys/cosign.key`). The signature is stored as an OCI referrer in the registry alongside the image. KBS uses the corresponding public key (`model-owner-verification-keys/cosign.pub`, registered in [Trustee setup Step 7](#step-7-register-app-specific-secrets-with-kbs)) to verify the signature during attestation. Signing uses `--tlog-upload=false` so the signature is not recorded in the public Rekor transparency log — required for compatibility with image-rs's `keyPath`-only policy.
+Signs the pushed application image with the model owner private key (`model-owner-verification-keys/cosign.key`). The signature is stored as an OCI referrer in the registry alongside the image. KBS uses the corresponding public key (`model-owner-verification-keys/cosign.pub`, registered in [Trustee setup Step 7](#step-7-register-app-specific-secrets-with-kbs)) to verify the signature during attestation. Signing uses a `--signing-config` with no Rekor URLs so the signature is not recorded in the public Rekor transparency log — required for compatibility with image-rs's `keyPath`-only policy.
 
 #### After publishing
 

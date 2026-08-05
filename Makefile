@@ -509,7 +509,7 @@ generate-model-owner-keys:
 .PHONY: sign-modelcar
 sign-modelcar:
 	@[ -f "$(MODEL_OWNER_COSIGN_KEY)" ] || (echo "Error: $(MODEL_OWNER_COSIGN_KEY) not found — run 'make generate-model-owner-keys' first"; exit 1)
-	cosign sign --tlog-upload=false --key $(MODEL_OWNER_COSIGN_KEY) $(MODEL_IMG)
+	cosign sign --signing-config <(printf '{"mediaType":"application/vnd.dev.sigstore.signingconfig.v0.2+json","rekorTlogUrls":[],"caUrls":[],"oidcUrls":[]}') --key $(MODEL_OWNER_COSIGN_KEY) $(MODEL_IMG)
 	@echo "Successfully signed $(MODEL_IMG)"
 
 .PHONY: build-app
@@ -525,7 +525,7 @@ push-app:
 .PHONY: model-owner-sign-app-container
 model-owner-sign-app-container:
 	@[ -f "$(MODEL_OWNER_COSIGN_KEY)" ] || (echo "Error: $(MODEL_OWNER_COSIGN_KEY) not found — run 'make generate-model-owner-keys' first"; exit 1)
-	cosign sign --tlog-upload=false --key $(MODEL_OWNER_COSIGN_KEY) $(APP_IMG)
+	cosign sign --signing-config <(printf '{"mediaType":"application/vnd.dev.sigstore.signingconfig.v0.2+json","rekorTlogUrls":[],"caUrls":[],"oidcUrls":[]}') --key $(MODEL_OWNER_COSIGN_KEY) $(APP_IMG)
 	@echo "Successfully signed $(APP_IMG)"
 
 .PHONY: install
