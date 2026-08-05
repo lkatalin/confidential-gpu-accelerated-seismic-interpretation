@@ -1116,16 +1116,25 @@ debug-attestation:
 	    echo "       Run 'make install NAMESPACE=$(NAMESPACE)' first."; \
 	    exit 1; \
 	}; \
-	POD_NAME="ear-debug-$$$$"; \
-	echo "Starting debug pod $$POD_NAME (kata VM boot takes ~60s)..."; \
-	oc run $$POD_NAME -n $(NAMESPACE) --restart=Never \
-	    --image=registry.access.redhat.com/ubi9/ubi-minimal:latest \
-	    --overrides="{\"metadata\":{\"annotations\":{\"io.katacontainers.config.hypervisor.cc_init_data\":\"$$INITDATA\",\"io.katacontainers.config.hypervisor.kernel_params\":\"agent.guest_components_rest_api=all\"}},\"spec\":{\"runtimeClassName\":\"$(KATA_RUNTIME_CLASS)\",\"containers\":[{\"name\":\"$$POD_NAME\",\"image\":\"registry.access.redhat.com/ubi9/ubi-minimal:latest\",\"resources\":{\"limits\":{\"nvidia.com/pgpu\":\"1\"},\"requests\":{\"nvidia.com/pgpu\":\"1\"}}}]}}" \
-	    -- sleep 300 \
-	    || { oc delete pod $$POD_NAME -n $(NAMESPACE) --ignore-not-found; exit 1; }; \
-	oc wait pod/$$POD_NAME -n $(NAMESPACE) --for=condition=Ready --timeout=5m \
-	    || { echo "ERROR: pod did not become ready"; oc delete pod $$POD_NAME -n $(NAMESPACE) --ignore-not-found; exit 1; }; \
-	echo "Pod ready. Waiting for CDH to initialize (up to 3m)..."; \
+	CLEANUP_POD=0; \
+	POD_NAME=$$(oc get pod -n $(NAMESPACE) -l app.kubernetes.io/name=seismic-app \
+	    --field-selector=status.phase=Running \
+	    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
+	if [ -n "$$POD_NAME" ]; then \
+	    echo "Using running seismic-app pod: $$POD_NAME"; \
+	else \
+	    POD_NAME="ear-debug-$$$$"; \
+	    CLEANUP_POD=1; \
+	    echo "No running seismic-app pod found. Starting debug pod $$POD_NAME (kata VM boot takes ~60s)..."; \
+	    oc run $$POD_NAME -n $(NAMESPACE) --restart=Never \
+	        --image=registry.access.redhat.com/ubi9/ubi-minimal:latest \
+	        --overrides="{\"metadata\":{\"annotations\":{\"io.katacontainers.config.hypervisor.cc_init_data\":\"$$INITDATA\",\"io.katacontainers.config.hypervisor.kernel_params\":\"agent.guest_components_rest_api=all\"}},\"spec\":{\"runtimeClassName\":\"$(KATA_RUNTIME_CLASS)\",\"containers\":[{\"name\":\"$$POD_NAME\",\"image\":\"registry.access.redhat.com/ubi9/ubi-minimal:latest\",\"resources\":{\"limits\":{\"nvidia.com/pgpu\":\"1\"},\"requests\":{\"nvidia.com/pgpu\":\"1\"}}}]}}" \
+	        -- sleep 300 \
+	        || { oc delete pod $$POD_NAME -n $(NAMESPACE) --ignore-not-found; exit 1; }; \
+	    oc wait pod/$$POD_NAME -n $(NAMESPACE) --for=condition=Ready --timeout=5m \
+	        || { echo "ERROR: pod did not become ready"; oc delete pod $$POD_NAME -n $(NAMESPACE) --ignore-not-found; exit 1; }; \
+	fi; \
+	echo "Waiting for CDH to initialize (up to 3m)..."; \
 	DEADLINE=$$(( $$(date +%s) + 180 )); \
 	LAST_RESPONSE=""; \
 	until LAST_RESPONSE=$$(oc exec -n $(NAMESPACE) $$POD_NAME -- \
@@ -1134,7 +1143,7 @@ debug-attestation:
 	    if [ $$(date +%s) -ge $$DEADLINE ]; then \
 	        echo "ERROR: CDH did not become ready within 3 minutes."; \
 	        echo "Last response from CDH:"; echo "$$LAST_RESPONSE"; \
-	        oc delete pod $$POD_NAME -n $(NAMESPACE) --ignore-not-found; \
+	        [ "$$CLEANUP_POD" = "1" ] && oc delete pod $$POD_NAME -n $(NAMESPACE) --ignore-not-found; \
 	        exit 1; \
 	    fi; \
 	    printf "."; sleep 5; \
@@ -1144,8 +1153,10 @@ debug-attestation:
 	oc exec -n $(NAMESPACE) $$POD_NAME -- \
 	    curl -sf "http://127.0.0.1:8006/aa/token?token_type=kbs" \
 	    | python3 scripts/decode-ear-token.py; \
-	oc delete pod $$POD_NAME -n $(NAMESPACE) --ignore-not-found; \
-	echo "Debug pod deleted."
+	if [ "$$CLEANUP_POD" = "1" ]; then \
+	    oc delete pod $$POD_NAME -n $(NAMESPACE) --ignore-not-found; \
+	    echo "Debug pod deleted."; \
+	fi
 
 .PHONY: validate-trustee-certificate
 validate-trustee-certificate:
