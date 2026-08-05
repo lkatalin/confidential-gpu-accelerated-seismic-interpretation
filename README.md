@@ -1052,7 +1052,9 @@ oc rollout status deployment/trustee-deployment -n trustee-operator-system --tim
 
 #### Step 7: Register app-specific secrets with KBS
 
-Register the model decryption key, cosign public key, and image verification policy with KBS. Secrets are registered as a Kubernetes Secret in `trustee-operator-system` named after the deployment namespace; the Trustee operator mounts it into KBS via its `kbsSecretResources` mechanism. After this step KBS will only release the model key to a pod running an image signed by the holder of `model-owner-verification-keys/cosign.key` — the "executables" factor of the three-factor attestation check.
+Register the model decryption key, cosign public key, and image verification policy with KBS. Secrets are registered as a Kubernetes Secret in `trustee-operator-system` named after the deployment namespace; the Trustee operator mounts it into KBS via its `kbsSecretResources` mechanism.
+
+The `image-policy` entry is a containers-policy.json document that requires sigstore-signed images for the app and model repos, verified against `kbs:///default/$NAMESPACE/cosign-key`. The CDH inside the kata guest fetches this policy from KBS at pod startup via `image_security_policy_uri` in its configuration and enforces it during image pull — an unsigned or incorrectly signed image is rejected before any container runs. This is the "executables" factor of the three-factor attestation check.
 
 The published quickstart images are pre-signed and `model-owner-verification-keys/cosign.pub` is already committed to this repository. If you are publishing your own images, see [Optional: Build and publish your own application](#optional-build-and-publish-your-own-application--model-owner) first.
 
@@ -1066,8 +1068,9 @@ MODEL_ENCRYPTION_KEY=7f27f40d746b5d92c2d2fe744096b0712ef9951955de9773b3eb20e2be0
 
 ```bash
 NAMESPACE=<your deployment namespace, e.g. seismic-interpretation>
-APP_IMAGE_REPO=quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-deepseismic-app
-MODEL_IMAGE_REPO=quay.io/rh-ai-quickstart/conf-gpu-accel-seismic-interp-deepseismic-model
+REGISTRY=${REGISTRY:-quay.io/rh-ai-quickstart}
+APP_IMAGE_REPO=$REGISTRY/conf-gpu-accel-seismic-interp-deepseismic-app
+MODEL_IMAGE_REPO=$REGISTRY/conf-gpu-accel-seismic-interp-deepseismic-model
 
 # Build image verification policy referencing kbs:///default/$NAMESPACE/cosign-key
 POLICY=$(printf '{"default":[{"type":"reject"}],"transports":{"docker":{"%s":[{"type":"sigstoreSigned","keyPath":"kbs:///default/%s/cosign-key"}],"%s":[{"type":"sigstoreSigned","keyPath":"kbs:///default/%s/cosign-key"}]}}}' \
@@ -1127,11 +1130,13 @@ oc new-project seismic-interpretation
 make install NAMESPACE=seismic-interpretation
 ```
 
-This fetches the KBS TLS certificate from the cluster, builds the initdata blob (AA/CDH configuration for the kata VM), and deploys the app via Helm. On startup the pod runs two init containers before the app:
+This fetches the KBS TLS certificate from the cluster, builds the initdata blob (AA/CDH configuration for the kata VM), and deploys the app via Helm. On startup the pod goes through the following sequence inside the kata VM:
+
+0. **Image pull (before init containers)**: the Confidential Data Hub (CDH) fetches the image verification policy from KBS at `kbs:///default/$NAMESPACE/image-policy`. The kata guest's image pull library (`image-rs`) uses this policy to verify each container image's cosign signature against the model owner's public key stored at `kbs:///default/$NAMESPACE/cosign-key` before allowing the pull to proceed. An unsigned or incorrectly signed image is rejected here — the pod never starts.
 
 1. **Init container `model-init`**: copies the encrypted ModelCar weights (`dutchf3_unet_final.pth.enc`) to the shared `/models-cache` volume.
 
-2. **Init container `model-decrypt`**: the Attestation Agent (injected by the kata runtime) contacts KBS, presents the cosign image signature as evidence, and receives a session token if the policy passes. The Confidential Data Hub (CDH) uses that token to retrieve the model decryption key from KBS and exposes it via a local REST API. `model-decrypt` fetches the key from CDH, decrypts `.pth.enc` → `.pth` on the shared volume, and deletes the key from local storage.
+2. **Init container `model-decrypt`**: CDH uses its KBS session (established via TDX + GPU attestation) to retrieve the model decryption key from KBS. `model-decrypt` fetches the key from CDH's local REST API, decrypts `.pth.enc` → `.pth` on the shared volume, and deletes the key from local storage.
 
 3. **Application container**: loads the plaintext model from `/models-cache` and starts the Gradio UI on port 7860.
 

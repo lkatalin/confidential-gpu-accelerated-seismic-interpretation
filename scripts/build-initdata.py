@@ -55,7 +55,10 @@ name = "cc_kbc"
 url = "{kbs_url}"
 kbs_cert = \"\"\"
 {kbs_cert}
-\"\"\"\
+\"\"\"
+
+[image]
+image_security_policy_uri = 'kbs:///default/{namespace}/image-policy'\
 """
 
 policy_rego = """\
