@@ -1009,14 +1009,20 @@ Or manually (equivalent to the above):
 
 ```bash
 NAMESPACE=<your deployment namespace, e.g. seismic-interpretation>
+REGISTRY=${REGISTRY:-quay.io/rh-ai-quickstart}
+APP_IMG=$REGISTRY/conf-gpu-accel-seismic-interp-deepseismic-app
+MODEL_IMG=$REGISTRY/conf-gpu-accel-seismic-interp-deepseismic-model
 KBS_CERT=$(oc get secret trusteeconfig-https-cert-secret -n trustee-operator-system \
     -o jsonpath='{.data.certificate}' | base64 -d)
 PCR8=$(echo "$KBS_CERT" | python3 scripts/build-initdata.py \
     "https://kbs-service.trustee-operator-system.svc.cluster.local:8080" \
-    "$NAMESPACE" --pcr8-only)
+    "$NAMESPACE" --pcr8-only \
+    --policy-mode locked \
+    --app-image "$APP_IMG" \
+    --model-image "$MODEL_IMG")
 echo "tdx_pcr08: $PCR8"
 
-# TDX hardware reference values for OSC 1.3.1 / kata-cc-nvidia-gpu.
+# TDX hardware reference values for OSC 1.13.1 / kata-cc-nvidia-gpu.
 # If you are running a different OSC version, see the note below.
 TDX_MR_TD=27fb849fb05653add8be4b8c5b2793e66d1e25773a5c6f80dabbc10a5cb18bc40b7d5caaaf299e3a200f7018cdaa6f74
 TDX_XFAM=e702060000000000

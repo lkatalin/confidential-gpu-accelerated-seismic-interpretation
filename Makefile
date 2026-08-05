@@ -32,6 +32,7 @@ NRAS_API_KEY        ?=
 INTEL_API_KEY       ?=
 RUNTIME_CLASS       ?= nvidia
 KATA_RUNTIME_CLASS    ?= kata-cc-nvidia-gpu
+POLICY_MODE           ?= locked
 # TDX infrastructure reference values for OSC 1.13.1 / kata-cc-nvidia-gpu.
 # Re-run scripts/collect-tdx-measurements.sh and update these after an OSC upgrade.
 TDX_MR_TD  ?= 27fb849fb05653add8be4b8c5b2793e66d1e25773a5c6f80dabbc10a5cb18bc40b7d5caaaf299e3a200f7018cdaa6f74
@@ -546,7 +547,10 @@ install:
 	echo "Building initdata blob (KBS URL: $$KBS_SVC_URL)..."; \
 	INITDATA=$$(oc get secret trusteeconfig-https-cert-secret -n trustee-operator-system \
 	    -o jsonpath='{.data.certificate}' | base64 -d \
-	    | python3 scripts/build-initdata.py "$$KBS_SVC_URL" "$(NAMESPACE)"); \
+	    | python3 scripts/build-initdata.py "$$KBS_SVC_URL" "$(NAMESPACE)" \
+	        --policy-mode $(POLICY_MODE) \
+	        --app-image $(APP_IMG) \
+	        --model-image $(MODEL_IMG)); \
 	helm upgrade --install seismic-app helm/ \
 	    -n $(NAMESPACE) \
 	    --set app.image=$(APP_IMG) \
@@ -1090,7 +1094,10 @@ setup-attestation:
 	@set -e; \
 	KBS_CERT=$$(oc get secret trusteeconfig-https-cert-secret -n trustee-operator-system \
 	    -o jsonpath='{.data.certificate}' | base64 -d); \
-	PCR8=$$(echo "$$KBS_CERT" | python3 scripts/build-initdata.py "https://kbs-service.trustee-operator-system.svc.cluster.local:8080" "$(NAMESPACE)" --pcr8-only); \
+	PCR8=$$(echo "$$KBS_CERT" | python3 scripts/build-initdata.py "https://kbs-service.trustee-operator-system.svc.cluster.local:8080" "$(NAMESPACE)" --pcr8-only \
+	    --policy-mode $(POLICY_MODE) \
+	    --app-image $(APP_IMG) \
+	    --model-image $(MODEL_IMG)); \
 	echo "tdx_pcr08: $$PCR8"; \
 	[ -n "$(TDX_MR_TD)" ] && echo "mr_td:     $(TDX_MR_TD)" || true; \
 	[ -n "$(TDX_XFAM)" ]  && echo "xfam:      $(TDX_XFAM)"  || true; \

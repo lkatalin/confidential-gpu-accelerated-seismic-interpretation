@@ -3,9 +3,15 @@
 Build the cc_init_data blob for the kata VM.
 
 Usage: build-initdata.py <KBS_URL> <NAMESPACE> [--pcr8-only]
+                         [--policy-mode dev|locked]
+                         [--app-image <repo>] [--model-image <repo>]
   Reads the KBS TLS certificate PEM from stdin.
   Default: prints the gzip+base64-encoded initdata TOML to stdout.
   --pcr8-only: prints the tdx_pcr08 hex value to stdout instead.
+  --policy-mode: selects scripts/policy-dev.rego or scripts/policy-locked.rego
+                 (default: locked)
+  --app-image / --model-image: image repo prefixes substituted into the locked
+                 policy (required when --policy-mode=locked)
 
 The initdata TOML contains three keys (aa.toml, cdh.toml, policy.rego).
 Its SHA-256 hash is included in the TEE attestation report when hardware TEE
@@ -21,17 +27,53 @@ Registering this in RVPS prevents the cluster admin from modifying the initdata
 import base64
 import gzip
 import hashlib
+import os
 import sys
 
 pcr8_only = "--pcr8-only" in sys.argv
 args = [a for a in sys.argv[1:] if not a.startswith("--")]
 
 if len(args) != 2:
-    print(f"Usage: {sys.argv[0]} <KBS_URL> <NAMESPACE> [--pcr8-only]", file=sys.stderr)
+    print(f"Usage: {sys.argv[0]} <KBS_URL> <NAMESPACE> [--pcr8-only] [--policy-mode dev|locked] [--app-image <repo>] [--model-image <repo>]", file=sys.stderr)
     sys.exit(1)
 
 kbs_url = args[0]
 namespace = args[1]
+
+policy_mode = "locked"
+app_image_repo = ""
+model_image_repo = ""
+i = 1
+while i < len(sys.argv):
+    if sys.argv[i] == "--policy-mode" and i + 1 < len(sys.argv):
+        policy_mode = sys.argv[i + 1]
+        i += 2
+    elif sys.argv[i] == "--app-image" and i + 1 < len(sys.argv):
+        app_image_repo = sys.argv[i + 1].split(":")[0]
+        i += 2
+    elif sys.argv[i] == "--model-image" and i + 1 < len(sys.argv):
+        model_image_repo = sys.argv[i + 1].split(":")[0]
+        i += 2
+    else:
+        i += 1
+
+if policy_mode not in ("dev", "locked"):
+    print(f"Error: --policy-mode must be 'dev' or 'locked', got '{policy_mode}'", file=sys.stderr)
+    sys.exit(1)
+
+if policy_mode == "locked" and (not app_image_repo or not model_image_repo):
+    print("Error: --app-image and --model-image are required when --policy-mode=locked", file=sys.stderr)
+    sys.exit(1)
+
+script_dir = os.path.dirname(os.path.abspath(__file__))
+policy_file = os.path.join(script_dir, "..", "policies", f"policy-{policy_mode}.rego")
+with open(policy_file) as f:
+    policy_rego = f.read()
+
+if policy_mode == "locked":
+    policy_rego = policy_rego.replace("{app_image_repo}", app_image_repo)
+    policy_rego = policy_rego.replace("{model_image_repo}", model_image_repo)
+
 kbs_cert = sys.stdin.read().strip()
 
 aa_toml = f"""\
@@ -59,48 +101,6 @@ kbs_cert = \"\"\"
 
 [image]
 image_security_policy_uri = 'kbs:///default/{namespace}/image-policy'\
-"""
-
-policy_rego = """\
-package agent_policy
-import future.keywords.in
-import future.keywords.if
-default AddARPNeighborsRequest := true
-default AddSwapRequest := true
-default CloseStdinRequest := true
-default CopyFileRequest := true
-default CreateContainerRequest := true
-default CreateSandboxRequest := true
-default DestroySandboxRequest := true
-default GetMetricsRequest := true
-default GetOOMEventRequest := true
-default GuestDetailsRequest := true
-default ListInterfacesRequest := true
-default ListRoutesRequest := true
-default MemHotplugByProbeRequest := true
-default OnlineCPUMemRequest := true
-default PauseContainerRequest := true
-default PullImageRequest := true
-default ReadStreamRequest := true
-default RemoveContainerRequest := true
-default RemoveStaleVirtiofsShareMountsRequest := true
-default ReseedRandomDevRequest := true
-default ResumeContainerRequest := true
-default SetGuestDateTimeRequest := true
-default SetPolicyRequest := false
-default SignalProcessRequest := true
-default StartContainerRequest := true
-default StartTracingRequest := true
-default StatsContainerRequest := true
-default StopTracingRequest := true
-default TtyWinResizeRequest := true
-default UpdateContainerRequest := true
-default UpdateEphemeralMountsRequest := true
-default UpdateInterfaceRequest := true
-default UpdateRoutesRequest := true
-default WaitProcessRequest := true
-default WriteStreamRequest := false
-default ExecProcessRequest := true\
 """
 
 toml = f"""\
