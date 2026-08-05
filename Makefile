@@ -32,7 +32,7 @@ NRAS_API_KEY        ?=
 INTEL_API_KEY       ?=
 RUNTIME_CLASS       ?= nvidia
 KATA_RUNTIME_CLASS    ?= kata-cc-nvidia-gpu
-# TDX infrastructure reference values for OSC 1.3.1 / kata-cc-nvidia-gpu.
+# TDX infrastructure reference values for OSC 1.13.1 / kata-cc-nvidia-gpu.
 # Re-run scripts/collect-tdx-measurements.sh and update these after an OSC upgrade.
 TDX_MR_TD  ?= 27fb849fb05653add8be4b8c5b2793e66d1e25773a5c6f80dabbc10a5cb18bc40b7d5caaaf299e3a200f7018cdaa6f74
 TDX_XFAM   ?= e702060000000000
