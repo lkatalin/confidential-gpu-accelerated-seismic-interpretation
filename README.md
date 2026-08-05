@@ -1127,9 +1127,7 @@ This fetches the KBS TLS certificate from the cluster, builds the initdata blob 
 
 1. **Init container `model-init`**: copies the encrypted ModelCar weights (`dutchf3_unet_final.pth.enc`) to the shared `/models-cache` volume.
 
-2. **Init container `model-decrypt`**: CDH uses its KBS session (established via TDX + GPU attestation) to retrieve the model decryption key from KBS. `model-decrypt` fetches the key from CDH's local REST API, decrypts `.pth.enc` → `.pth` on the shared volume, and deletes the key from local storage.
-
-3. **Application container**: loads the plaintext model from `/models-cache` and starts the Gradio UI on port 7860.
+2. **Application container**: runs `decrypt.sh` first — CDH uses its KBS session (established via TDX + GPU attestation) to retrieve the model decryption key, which `decrypt.sh` uses to decrypt `.pth.enc` → `.pth` on the shared volume and then delete the key from local storage. The app then loads the plaintext model and starts the Gradio UI on port 7860.
 
 Wait for both init containers to complete and the app container to reach `Running`:
 
@@ -1147,7 +1145,7 @@ Open the printed URL in your browser.
 
 **Expected outcome:**
 - ✓ The Gradio UI loads showing an upload panel and an empty results area
-- ✓ `oc logs <pod> -c model-decrypt` shows `Key received from KBS via CDH` then `Model decrypted to /models-cache/dutchf3_unet_final.pth`
+- ✓ `oc logs <pod> -c app` shows `Key received from KBS via CDH` then `Model decrypted to /models-cache/dutchf3_unet_final.pth`
 
 ### Use the application
 
@@ -1202,27 +1200,18 @@ oc exec -n trustee-operator-system deployment/trustee-deployment -- \
 # expect: conf-seismic-cosign-key  conf-seismic-image-policy  conf-seismic-model-key
 ```
 
-To confirm that attestation succeeded and the model key was fetched from KBS, inspect the init container logs:
+To confirm that attestation succeeded and the model key was fetched from KBS, inspect the app container logs:
 
 ```bash
 POD=$(oc get pod -n seismic-interpretation -l app.kubernetes.io/name=seismic-app -o jsonpath='{.items[0].metadata.name}')
-
-# Check KBS key retrieval and model decryption
-oc logs -n seismic-interpretation $POD -c model-decrypt
-
-# Check model load in the app container
-oc logs -n seismic-interpretation $POD -c app | head -5
+oc logs -n seismic-interpretation $POD -c app | head -10
 ```
 
-**Expected outcome — `model-decrypt`:**
+**Expected outcome:**
 ```
 Waiting for CDH to be ready...
 Key received from KBS via CDH
 Model decrypted to /models-cache/dutchf3_unet_final.pth
-```
-
-**Expected outcome — `app`:**
-```
 Device: cuda
 Loading model from /models-cache/dutchf3_unet_final.pth ...
 Model ready.
