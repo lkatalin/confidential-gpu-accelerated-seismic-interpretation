@@ -318,7 +318,7 @@ Sample `.npy` seismic sections from the Dutch F3 dataset are included in the `sa
 
 ### Hardware prerequisite: Enable TEE in server firmware and kernel parameters
 
-Confidential containers require a hardware Trusted Execution Environment (TEE). This is a one-time server configuration done via your BMC/IPMI console by whoever manages the bare metal hosts. The BIOS settings and kernel parameters must be applied before running Part 1.
+Confidential containers require a hardware Trusted Execution Environment (TEE). This is a one-time server configuration done via your BMC/IPMI console by whoever manages the bare metal hosts. The BIOS settings and kernel parameters must be applied before the kata containers setup below.
 
 #### Configure BIOS firmware
 
@@ -899,17 +899,7 @@ The Intel Device Plugin Operator manages the SGX Device Plugin DaemonSet that ex
 Verify the DCAP stack:
 
 ```bash
-# Check Intel Device Plugin Operator is installed
-oc get csv -n intel-dcap | grep intel-device-plugins-operator
-
-# Check Intel TDX DCAP Operator is installed
-oc get csv -n intel-dcap | grep intel-tdx-dcap-operator
-
-# Check TdxQuoteGenerationService CR was accepted
-oc get tdxquotegenerationservices.trustedservices.intel.com -n intel-dcap
-
-# Check QGS pod (includes PCCS sidecar) is Running
-oc get pods -n intel-dcap | grep intel-tdx-dcap-qgs
+make verify-dcap
 ```
 
 **Expected outcome:**
@@ -924,7 +914,7 @@ oc get pods -n intel-dcap | grep intel-tdx-dcap-qgs
 
 > **In this quickstart** the application deployer also runs Trustee setup for demo convenience. In production this section is performed by the model owner on independently controlled infrastructure. Steps 6 and 7 are always model owner responsibilities regardless of deployment topology.
 
-To perform automatically (after Part 1 is complete):
+To set up Trustee automatically (cluster-admin required):
 
 ```bash
 make setup-trustee-in-cluster

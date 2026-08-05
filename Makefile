@@ -118,6 +118,7 @@ help:
 	@echo "                               CDH inside kata VMs can generate attestation quotes"
 	@echo "                               Requires INTEL_API_KEY from api.portal.trustedservices.intel.com"
 	@echo "                               Requires setup-kata to have completed first"
+	@echo "    verify-dcap              - Check DCAP operator CSVs, TdxQuoteGenerationService CR, and QGS pod status"
 	@echo "    setup-trustee-in-cluster - Install Trustee KBS operator and configure attestation policy"
 	@echo "                               Requires setup-dcap to have completed first (Intel TDX only)"
 	@echo "    setup-attestation        - Register model key, cosign key, and image policy with KBS;"
@@ -984,6 +985,20 @@ setup-dcap:
 	oc get pods -n intel-dcap | grep intel-tdx-dcap-qgs || echo "(no intel-tdx-dcap-qgs pod yet)"; \
 	oc get tdxquotegenerationservices.trustedservices.intel.com -n intel-dcap --ignore-not-found 2>/dev/null || true; \
 	echo "=== setup-dcap complete — run make setup-trustee-in-cluster next ==="
+
+.PHONY: verify-dcap
+verify-dcap:
+	@echo "=== Intel Device Plugin Operator ==="
+	@oc get csv -n intel-dcap 2>/dev/null | grep intel-device-plugins-operator || echo "  Not found"
+	@echo ""
+	@echo "=== Intel TDX DCAP Operator ==="
+	@oc get csv -n intel-dcap 2>/dev/null | grep intel-tdx-dcap-operator || echo "  Not found"
+	@echo ""
+	@echo "=== TdxQuoteGenerationService CR ==="
+	@oc get tdxquotegenerationservices.trustedservices.intel.com -n intel-dcap 2>/dev/null || echo "  Not found"
+	@echo ""
+	@echo "=== QGS pod ==="
+	@oc get pods -n intel-dcap 2>/dev/null | grep intel-tdx-dcap-qgs || echo "  Not found"
 
 .PHONY: setup-trustee-in-cluster
 setup-trustee-in-cluster:
