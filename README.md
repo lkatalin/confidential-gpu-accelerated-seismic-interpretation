@@ -320,6 +320,8 @@ Sample `.npy` seismic sections from the Dutch F3 dataset are included in the `sa
 
 Confidential containers require a hardware Trusted Execution Environment (TEE). This is a one-time server configuration done via your BMC/IPMI console by whoever manages the bare metal hosts. The BIOS settings and kernel parameters must be applied before running Part 1.
 
+#### Configure BIOS firmware
+
 **Intel TDX (Intel Xeon Scalable 4th Gen / Sapphire Rapids or later)**
 
 Access the BIOS setup utility via your BMC/IPMI console. Navigate to **Socket Configuration → Processor Configuration** and set:
@@ -366,6 +368,8 @@ NODE=$(oc get nodes -l 'node-role.kubernetes.io/worker,!node-role.kubernetes.io/
 oc debug node/$NODE -- chroot /host dmesg | grep -i snp
 ```
 
+#### Apply kernel parameters
+
 To apply the kernel parameters automatically (cluster-admin required):
 
 ```bash
@@ -375,10 +379,6 @@ make setup-amd-tee      # AMD EPYC with SEV-SNP
 ```
 
 Or follow the manual steps below.
-
-**Prerequisites:**
-- Logged in as cluster-admin
-- NVIDIA GPU Operator already installed (verify: **Operators → Installed Operators → namespace `nvidia-gpu-operator` → status Succeeded**)
 
 The node must boot with TDX kernel parameters active before the OSC operator can install kata-cc. This step applies two MachineConfigs and triggers a node reboot.
 
