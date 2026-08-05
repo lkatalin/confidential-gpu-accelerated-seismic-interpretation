@@ -1125,7 +1125,7 @@ This fetches the KBS TLS certificate from the cluster, builds the initdata blob 
 
 0. **Image pull (before init containers)**: the Confidential Data Hub (CDH) fetches the image verification policy from KBS at `kbs:///default/$NAMESPACE/image-policy`. The kata guest's image pull library (`image-rs`) uses this policy to verify each container image's cosign signature against the model owner's public key stored at `kbs:///default/$NAMESPACE/cosign-key` before allowing the pull to proceed. An unsigned or incorrectly signed image is rejected here — the pod never starts.
 
-1. **Init container `model-init`**: copies the encrypted ModelCar weights (`dutchf3_unet_final.pth.enc`) to the shared `/models-cache` volume.
+1. **Init container `model-init`**: runs inside the kata VM — copies the encrypted ModelCar weights (`dutchf3_unet_final.pth.enc`) to the shared `/models-cache` volume.
 
 2. **Application container**: runs `decrypt.sh` first — CDH uses its KBS session (established via TDX + GPU attestation) to retrieve the model decryption key, which `decrypt.sh` uses to decrypt `.pth.enc` → `.pth` on the shared volume and then delete the key from local storage. The app then loads the plaintext model and starts the Gradio UI on port 7860.
 
