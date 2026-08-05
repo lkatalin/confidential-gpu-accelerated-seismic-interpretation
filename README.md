@@ -1289,7 +1289,7 @@ This is not required to run the quickstart. The steps below are for model owners
 - `podman` or `docker`
 - `MODEL_ENCRYPTION_KEY` set in your environment (the AES-256-CBC key used during training)
 - `podman login quay.io` authenticated
-- `cosign` 2.0+
+- `cosign` 3.1.2+
 - The trained weights at `model-creation/model-weights/dutchf3_unet_final.pth` — copy them from the training PVC first with `make get-model NAMESPACE=<your-namespace>`
 
 #### Step 1: Generate a signing key pair
@@ -1363,7 +1363,7 @@ This is not required to run the quickstart. The steps below are for model owners
 **Prerequisites:**
 - `podman` or `docker`
 - `podman login quay.io` authenticated to a namespace where you can push
-- `cosign` 2.0+
+- `cosign` 3.1.2+
 - A model owner key pair in `model-owner-verification-keys/` — generate one with `make generate-model-owner-keys` if you have not already done so (see [Optional: Encrypt and publish your own model](#optional-encrypt-and-publish-your-own-model))
 
 **Why the model owner signs the application image**
@@ -1394,7 +1394,7 @@ Pushes the image to quay.io. The target registry and repository are controlled b
 make model-owner-sign-app-container
 ```
 
-Signs the pushed application image with the model owner private key (`model-owner-verification-keys/cosign.key`). The signature is stored as an OCI referrer in the registry alongside the image. KBS uses the corresponding public key (`model-owner-verification-keys/cosign.pub`, registered in [Trustee setup Step 7](#step-7-register-app-specific-secrets-with-kbs)) to verify the signature during attestation. Signing uses a `--signing-config` with no Rekor URLs so the signature is not recorded in the public Rekor transparency log — required for compatibility with image-rs's `keyPath`-only policy.
+Signs the pushed application image with the model owner private key (`model-owner-verification-keys/cosign.key`). The signature is stored as an OCI referrer in the registry alongside the image. KBS uses the corresponding public key (`model-owner-verification-keys/cosign.pub`, registered in [Trustee setup Step 7](#step-7-register-app-specific-secrets-with-kbs)) to verify the signature during attestation. Signing uses `--new-bundle-format=false --use-signing-config=false --tlog-upload=false` to produce legacy-format signatures compatible with the version of image-rs bundled in OSC kata containers. cosign v3 defaults to DSSE bundle v0.3 format and OCI referrers, which image-rs does not support — the legacy format is required.
 
 #### After publishing
 
