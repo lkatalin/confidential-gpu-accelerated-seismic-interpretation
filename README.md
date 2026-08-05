@@ -1014,10 +1014,11 @@ APP_IMG=$REGISTRY/conf-gpu-accel-seismic-interp-deepseismic-app
 MODEL_IMG=$REGISTRY/conf-gpu-accel-seismic-interp-deepseismic-model
 KBS_CERT=$(oc get secret trusteeconfig-https-cert-secret -n trustee-operator-system \
     -o jsonpath='{.data.certificate}' | base64 -d)
+POLICY_MODE=${POLICY_MODE:-locked}
 PCR8=$(echo "$KBS_CERT" | python3 scripts/build-initdata.py \
     "https://kbs-service.trustee-operator-system.svc.cluster.local:8080" \
     "$NAMESPACE" --pcr8-only \
-    --policy-mode locked \
+    --policy-mode "$POLICY_MODE" \
     --app-image "$APP_IMG" \
     --model-image "$MODEL_IMG")
 echo "tdx_pcr08: $PCR8"
