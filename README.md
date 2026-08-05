@@ -823,13 +823,7 @@ Both files create a `KubeletConfig` named `kata-runtime-request-timeout` with `r
 
 > **AMD SEV-SNP clusters:** Skip this section entirely. AMD SNP attestation does not use an SGX-based Quoting Enclave — skip directly to [Trustee setup](#trustee-setup--model-owner-cluster-admin-once-per-cluster).
 
-When a kata TDX pod attests to Trustee, the CDH inside the VM generates a TDX attestation quote via a **Quote Generation Service (QGS)** running on the host. In OSC 1.13, quote generation is kernel-mediated: the host TDX driver connects to QGS via a unix socket (`/var/run/tdx-qgs/qgs.socket`), and QGS runs an Intel SGX Quoting Enclave to sign the hardware TDX report into a verifiable DCAP quote. The `tdx_quote_generation_service_socket_port = 0` setting in the kata TDX configuration (applied by the `99-enable-intel-tdx` MachineConfig) enables this path.
-
-QGS is deployed by the **Intel TDX DCAP Operator**, which also installs the **Intel SGX Device Plugin** that exposes SGX hardware resources to the QGS pod. The `TdxQuoteGenerationService` CR used here uses `platformRegistration.Online` — QGS contacts Intel PCS directly with an API key, so no local PCCS is needed. For full details see the [OpenShift Sandboxed Containers 1.13 documentation](https://docs.redhat.com/en/documentation/openshift_sandboxed_containers/1.13).
-
 > **Upgrading from OSC 1.12:** If you previously deployed Intel TDX remote attestation using OSC 1.12, attestation will not work with OSC 1.13 without a full reinstall. You must uninstall the existing DCAP deployment and **toggle Intel SGX Factory Reset in the BIOS** before reinstalling the Intel TDX DCAP Operator per the steps below. The BIOS reset clears stale platform provisioning state that prevents the new QGS from registering correctly with Intel PCS.
-
-#### Step 1: Get an Intel PCS API key
 
 QGS uses the Intel Provisioning Certificate Service (PCS) to fetch the PCK (Platform Certification Key) certificate chain needed to build a verifiable TDX attestation quote. Access to PCS requires a free Intel API subscription key.
 
@@ -849,11 +843,9 @@ make setup-dcap INTEL_API_KEY=<your-intel-pcs-api-key>
 
 Or follow the manual steps below.
 
-#### Step 2: Install the Intel Device Plugin Operator
+#### Step 1: Install the Intel Device Plugin Operator
 
 The Intel Device Plugin Operator manages the SGX Device Plugin DaemonSet that exposes `sgx.intel.com/enclave` and `sgx.intel.com/provision` resources on SGX-capable nodes. QGS requests these resources so the scheduler places it only on nodes with the correct hardware and device access.
-
-To install manually:
 
 1. Go to **Operators → OperatorHub**
 2. Search for **Intel Device Plugins Operator**
@@ -861,9 +853,7 @@ To install manually:
 4. Click **Install**, set the namespace to `intel-dcap` (create it first if needed), set **Update approval** to **Manual**, click **Install**
 5. Go to **Operators → Installed Operators**, select namespace `intel-dcap`, approve the InstallPlan, wait for status **Succeeded**
 
-#### Step 3: Install the Intel TDX DCAP Operator and deploy QGS
-
-To install manually instead:
+#### Step 2: Install the Intel TDX DCAP Operator and deploy QGS
 
 1. Create the `intel-dcap` namespace if it does not already exist:
    ```bash
