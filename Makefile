@@ -317,25 +317,29 @@ check-prereqs:
 	\
 	echo ""; \
 	echo "=== Intel DCAP (TDX quote generation) ==="; \
-	if oc get daemonset tdx-qgs -n intel-dcap --ignore-not-found 2>/dev/null | grep -q .; then \
-	    READY=$$(oc get daemonset tdx-qgs -n intel-dcap \
-	        -o jsonpath='{.status.numberReady}' 2>/dev/null || echo "0"); \
-	    DESIRED=$$(oc get daemonset tdx-qgs -n intel-dcap \
-	        -o jsonpath='{.status.desiredNumberScheduled}' 2>/dev/null || echo "0"); \
-	    if [ "$$READY" = "$$DESIRED" ] && [ "$$DESIRED" != "0" ]; then \
-	        ok "tdx-qgs DaemonSet: $$READY/$$DESIRED pods ready (vsock port 4050 active)"; \
-	    elif [ "$$DESIRED" = "0" ]; then \
-	        warn "tdx-qgs DaemonSet exists but 0 pods desired — no nodes with intel.feature.node.kubernetes.io/tdx=true"; \
+	if oc get csv -n intel-dcap 2>/dev/null \
+	        | grep -q "intel-device-plugins-operator.*Succeeded"; then \
+	    ok "Intel Device Plugin Operator: installed"; \
+	else \
+	    warn "Intel Device Plugin Operator not found — run: make setup-dcap INTEL_API_KEY=<key> (Intel TDX only)"; \
+	fi; \
+	if oc get csv -n intel-dcap 2>/dev/null \
+	        | grep -q "intel-tdx-dcap-operator.*Succeeded"; then \
+	    ok "Intel TDX DCAP Operator: installed"; \
+	else \
+	    warn "Intel TDX DCAP Operator not found — run: make setup-dcap INTEL_API_KEY=<key> (Intel TDX only)"; \
+	fi; \
+	if oc get tdxquotegenerationservice intel-tdx-dcap -n intel-dcap \
+	        --ignore-not-found 2>/dev/null | grep -q .; then \
+	    QGS_RUNNING=$$(oc get pods -n intel-dcap 2>/dev/null \
+	        | grep "intel-tdx-dcap-qgs" | grep -c "Running" || echo "0"); \
+	    if [ "$$QGS_RUNNING" -gt 0 ]; then \
+	        ok "TdxQuoteGenerationService: $$QGS_RUNNING QGS pod(s) running"; \
 	    else \
-	        warn "tdx-qgs DaemonSet: $$READY/$$DESIRED pods ready — QGS not yet running on all TDX nodes"; \
+	        warn "TdxQuoteGenerationService CR exists but no QGS pods running — check: oc get pods -n intel-dcap"; \
 	    fi; \
 	else \
-	    warn "tdx-qgs DaemonSet not found — run: make setup-dcap INTEL_API_KEY=<key> (Intel TDX only)"; \
-	fi; \
-	if oc get deployment pccs -n intel-dcap --ignore-not-found 2>/dev/null | grep -q .; then \
-	    ok "PCCS deployment present (PCK certificate cache)"; \
-	else \
-	    warn "PCCS deployment not found — run: make setup-dcap INTEL_API_KEY=<key> (Intel TDX only)"; \
+	    warn "TdxQuoteGenerationService not found — run: make setup-dcap INTEL_API_KEY=<key> (Intel TDX only)"; \
 	fi; \
 	\
 	echo ""; \
