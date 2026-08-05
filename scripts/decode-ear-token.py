@@ -54,6 +54,43 @@ def normalize_hex(val):
     return str(val).lower().lstrip('0x') if val else ''
 
 
+def print_value(key, val, indent=8):
+    """Print a key/value from evidence, pretty-printing nested dicts/lists."""
+    prefix = ' ' * indent
+    if isinstance(val, dict):
+        print(f"{prefix}{key}:")
+        for k, v in sorted(val.items()):
+            print_value(k, v, indent + 2)
+    elif isinstance(val, list):
+        print(f"{prefix}{key}:")
+        for item in val:
+            print_value('', item, indent + 2)
+    elif isinstance(val, str) and '\n' in val:
+        # Multi-line string (e.g. PEM cert, Rego policy) — indent each line
+        print(f"{prefix}{key}:")
+        for line in val.splitlines():
+            print(f"{prefix}  {line}")
+    else:
+        print(f"{prefix}{key:<30} {val}")
+
+
+def find_nested(obj, key):
+    """Recursively find the first value for a key in a nested dict/list."""
+    if isinstance(obj, dict):
+        if key in obj:
+            return obj[key]
+        for v in obj.values():
+            result = find_nested(v, key)
+            if result is not None:
+                return result
+    elif isinstance(obj, list):
+        for item in obj:
+            result = find_nested(item, key)
+            if result is not None:
+                return result
+    return None
+
+
 def collect_submod_data(sub, expected):
     """
     Return a dict describing a submod's claims, evidence, and any detected issues.
@@ -85,19 +122,11 @@ def collect_submod_data(sub, expected):
         issue = {'claim': claim, 'value': val, 'details': []}
 
         if claim == 'hardware':
-            tcb = ev.get('tcb_status')
+            tcb = find_nested(ev, 'tcb_status')
             if tcb:
-                issue['details'].append(f"tcb_status: {tcb}")
-                if tcb != 'UpToDate':
-                    issue['details'].append("Cause: TDX microcode/firmware is out of date")
-                    issue['details'].append("Fix option 1 (correct): update host TDX microcode/firmware")
-                    issue['details'].append("Fix option 2 (quick):   exclude hardware check from resource policy")
-            advisory = ev.get('advisory_ids') or ev.get('advisoryIDs')
-            if advisory:
-                issue['details'].append(f"Advisory IDs: {advisory}")
+                issue['details'].append(f"tcb_status = {tcb}")
 
         elif claim == 'executables':
-            issue['details'].append("Cause: one or more TDX measurements do not match RVPS reference values")
             for key in ('mr_td', 'rtmr_0', 'rtmr_1', 'rtmr_2', 'rtmr_3', 'xfam'):
                 actual = ev.get(key)
                 if actual is None:
@@ -106,22 +135,17 @@ def collect_submod_data(sub, expected):
                 if exp:
                     match = normalize_hex(actual) == normalize_hex(exp)
                     tag = 'MATCH' if match else 'MISMATCH'
-                    issue['details'].append(
-                        f"{key}: actual   = {actual}")
-                    issue['details'].append(
-                        f"{'':>len(key)}  expected = {exp}  [{tag}]")
+                    issue['details'].append(f"{key}")
+                    issue['details'].append(f"  actual   = {actual}")
+                    issue['details'].append(f"  expected = {exp}  [{tag}]")
                 else:
-                    issue['details'].append(f"{key}: {actual}  (no expected value to compare)")
-            if not expected:
-                issue['details'].append(
-                    "Pass --mr-td/--xfam/--rtmr-1/--rtmr-2 or set TDX_* env vars for mismatch comparison")
+                    issue['details'].append(f"{key} = {actual}")
 
         elif claim == 'configuration':
-            issue['details'].append("Cause: initdata hash (tdx_pcr08) does not match RVPS reference value")
-            issue['details'].append("Fix: run 'make setup-attestation NAMESPACE=<ns>'")
-            rtmr3 = ev.get('rtmr_3')
-            if rtmr3:
-                issue['details'].append(f"rtmr_3 (initdata binding): {rtmr3}")
+            for key in ('rtmr_3',):
+                actual = ev.get(key)
+                if actual is not None:
+                    issue['details'].append(f"{key} = {actual}")
 
         issues.append(issue)
 
@@ -151,7 +175,7 @@ def print_summary(all_data, verifier):
             n += 1
             claim = issue['claim']
             val = issue['value']
-            print(f"  Issue {n}: [{name}] {claim} = {val}  (non-affirming, expected 2–31)")
+            print(f"  Issue {n}: [{name}] {claim} = {val}")
             for line in issue['details']:
                 print(f"           {line}")
             print()
@@ -185,25 +209,21 @@ def print_evidence_section(name, data, expected):
             val = ev[key]
             exp = expected.get(key, '')
             prefix = '        '
-            if exp:
+            if key == 'tcb_status':
+                note = '  <-- causes hardware=97' if val != 'UpToDate' else ''
+                print(f"{prefix}{key:<30} {val}{note}")
+            elif exp:
                 match = normalize_hex(val) == normalize_hex(exp)
                 tag = 'MATCH    ' if match else 'MISMATCH <--'
                 print(f"{prefix}{key:<30} {val}")
                 print(f"{prefix}{'':30} expected: {exp}  [{tag}]")
-            elif isinstance(val, (dict, list)):
-                print(f"{prefix}{key:<30} {json.dumps(val)}")
             else:
-                print(f"{prefix}{key:<30} {val}")
+                print_value(key, val, indent=8)
 
     if nvidia and isinstance(nvidia, dict):
         print("    NVIDIA / GPU Evidence:")
         for key in sorted(nvidia.keys()):
-            val = nvidia[key]
-            prefix = '        '
-            if isinstance(val, (dict, list)):
-                print(f"{prefix}{key:<30} {json.dumps(val)}")
-            else:
-                print(f"{prefix}{key:<30} {val}")
+            print_value(key, nvidia[key], indent=8)
 
     print()
 
