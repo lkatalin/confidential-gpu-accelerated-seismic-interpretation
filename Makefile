@@ -329,7 +329,7 @@ check-prereqs:
 	else \
 	    warn "Intel TDX DCAP Operator not found — run: make setup-dcap INTEL_API_KEY=<key> (Intel TDX only)"; \
 	fi; \
-	if oc get tdxquotegenerationservice intel-tdx-dcap -n intel-dcap \
+	if oc get tdxquotegenerationservices.trustedservices.intel.com intel-tdx-dcap -n intel-dcap \
 	        --ignore-not-found 2>/dev/null | grep -q .; then \
 	    QGS_RUNNING=$$(oc get pods -n intel-dcap 2>/dev/null \
 	        | grep "intel-tdx-dcap-qgs" | grep -c "Running" || echo "0"); \
@@ -956,7 +956,7 @@ setup-dcap:
 	oc adm policy add-scc-to-user privileged -z intel-tdx-dcap -n intel-dcap; \
 	\
 	echo "=== Step 5: TdxQuoteGenerationService CR ==="; \
-	if oc get tdxquotegenerationservice intel-tdx-dcap -n intel-dcap \
+	if oc get tdxquotegenerationservices.trustedservices.intel.com intel-tdx-dcap -n intel-dcap \
 	        --ignore-not-found 2>/dev/null | grep -q .; then \
 	    echo "WARNING: TdxQuoteGenerationService intel-tdx-dcap already exists, skipping."; \
 	else \
@@ -976,7 +976,7 @@ setup-dcap:
 	\
 	echo "DCAP stack status:"; \
 	oc get pods -n intel-dcap | grep intel-tdx-dcap-qgs || echo "(no intel-tdx-dcap-qgs pod yet)"; \
-	oc get tdxquotegenerationservice -n intel-dcap --ignore-not-found 2>/dev/null || true; \
+	oc get tdxquotegenerationservices.trustedservices.intel.com -n intel-dcap --ignore-not-found 2>/dev/null || true; \
 	echo "=== setup-dcap complete — run make setup-trustee-in-cluster next ==="
 
 .PHONY: setup-trustee-in-cluster
