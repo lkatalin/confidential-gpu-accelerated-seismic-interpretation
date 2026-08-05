@@ -8,6 +8,7 @@ default CopyFileRequest := false
 default CreateContainerRequest := false
 default CreateSandboxRequest := true
 default DestroySandboxRequest := true
+default GetDiagnosticDataRequest := false
 default GetMetricsRequest := true
 default GetOOMEventRequest := true
 default GuestDetailsRequest := true
