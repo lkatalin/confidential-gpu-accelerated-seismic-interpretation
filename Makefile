@@ -557,9 +557,9 @@ uninstall:
 setup-intel-tee:
 	@set -e; \
 	echo "=== setup-intel-tee: Intel TDX kernel parameters ==="; \
-	WORKER_COUNT=$$(oc get mcp worker \
-	    -o jsonpath='{.status.machineCount}' 2>/dev/null || echo "0"); \
-	if [ "$$WORKER_COUNT" != "0" ]; then \
+	PURE_WORKERS=$$(oc get nodes -l 'node-role.kubernetes.io/worker,!node-role.kubernetes.io/master' \
+	    --no-headers 2>/dev/null | wc -l | tr -d ' '); \
+	if [ "$$PURE_WORKERS" != "0" ]; then \
 	    echo "WARNING: Multi-node cluster detected."; \
 	    echo "         MachineConfigs target master role by default — for worker nodes running kata,"; \
 	    echo "         edit helm/osc/templates/tdx-machine-config.yaml and"; \
@@ -620,9 +620,9 @@ setup-intel-tee:
 setup-amd-tee:
 	@set -e; \
 	echo "=== setup-amd-tee: AMD SEV-SNP IOMMU parameters ==="; \
-	WORKER_COUNT=$$(oc get mcp worker \
-	    -o jsonpath='{.status.machineCount}' 2>/dev/null || echo "0"); \
-	if [ "$$WORKER_COUNT" != "0" ]; then \
+	PURE_WORKERS=$$(oc get nodes -l 'node-role.kubernetes.io/worker,!node-role.kubernetes.io/master' \
+	    --no-headers 2>/dev/null | wc -l | tr -d ' '); \
+	if [ "$$PURE_WORKERS" != "0" ]; then \
 	    echo "WARNING: Multi-node cluster detected."; \
 	    echo "         IOMMU MachineConfig targets master role by default — for worker nodes running kata,"; \
 	    echo "         edit helm/osc/templates/iommu-machine-config.yaml to set role: worker, then apply manually."; \
@@ -753,9 +753,9 @@ setup-kata:
 	if oc get kataconfig --ignore-not-found 2>/dev/null | grep -q .; then \
 	    echo "WARNING: KataConfig already exists, skipping."; \
 	else \
-	    WORKER_COUNT=$$(oc get mcp worker \
-	        -o jsonpath='{.status.machineCount}' 2>/dev/null || echo "0"); \
-	    if [ "$$WORKER_COUNT" = "0" ]; then \
+	    PURE_WORKERS=$$(oc get nodes -l 'node-role.kubernetes.io/worker,!node-role.kubernetes.io/master' \
+	        --no-headers 2>/dev/null | wc -l | tr -d ' '); \
+	    if [ "$$PURE_WORKERS" = "0" ]; then \
 	        echo "WARNING: Single-node cluster — using master-pool KataConfig (node will reboot ~10 min)."; \
 	        oc apply -f helm/osc/templates/kataconfig-sno.yaml; \
 	    else \
@@ -763,9 +763,9 @@ setup-kata:
 	        oc apply -f helm/osc/templates/kataconfig.yaml; \
 	    fi; \
 	fi; \
-	WORKER_COUNT=$$(oc get mcp worker \
-	    -o jsonpath='{.status.machineCount}' 2>/dev/null || echo "0"); \
-	if [ "$$WORKER_COUNT" = "0" ]; then KATA_MCP=master; else KATA_MCP=kata-oc; fi; \
+	PURE_WORKERS=$$(oc get nodes -l 'node-role.kubernetes.io/worker,!node-role.kubernetes.io/master' \
+	    --no-headers 2>/dev/null | wc -l | tr -d ' '); \
+	if [ "$$PURE_WORKERS" = "0" ]; then KATA_MCP=master; else KATA_MCP=kata-oc; fi; \
 	echo "Waiting for MachineConfigPool $$KATA_MCP rollout (up to 30 min)..."; \
 	DEADLINE=$$(( $$(date +%s) + 1800 )); \
 	while [ $$(date +%s) -lt $$DEADLINE ]; do \
@@ -825,9 +825,9 @@ setup-kata:
 	    done; \
 	fi; \
 	echo "Applying KubeletConfig to extend container-creation timeout for kata guest-pull..."; \
-	WORKER_COUNT=$$(oc get mcp worker \
-	    -o jsonpath='{.status.machineCount}' 2>/dev/null || echo "0"); \
-	if [ "$$WORKER_COUNT" = "0" ]; then \
+	PURE_WORKERS=$$(oc get nodes -l 'node-role.kubernetes.io/worker,!node-role.kubernetes.io/master' \
+	    --no-headers 2>/dev/null | wc -l | tr -d ' '); \
+	if [ "$$PURE_WORKERS" = "0" ]; then \
 	    oc apply -f helm/osc/templates/kubelet-config-sno.yaml; \
 	    KUBELET_MCP=master; \
 	else \

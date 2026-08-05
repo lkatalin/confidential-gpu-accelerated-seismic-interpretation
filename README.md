@@ -767,19 +767,27 @@ oc exec -n nvidia-gpu-operator $SANDBOX_POD -- \
 
 The `kata-cc-nvidia-gpu` runtime uses CDH guest-pull: every container image is downloaded and unpacked from the registry **inside the kata VM** on each pod start. The app image is ~4.6 GB compressed, which takes longer than the kubelet's default 2-minute `runtimeRequestTimeout`. Without this change the pod fails with `RST_STREAM CANCEL` partway through the image pull.
 
-Apply a `KubeletConfig` to extend the timeout to 10 minutes across all worker nodes:
+First determine your cluster type — a node that has both `master` and `worker` roles is SNO:
+
+```bash
+oc get nodes -o custom-columns=NAME:.metadata.name,ROLES:.metadata.labels
+```
+
+**Multi-node cluster** (dedicated worker nodes):
 
 ```bash
 oc apply -f helm/osc/templates/kubelet-config.yaml
-```
-
-This triggers a MachineConfig rolling update — worker nodes drain and reboot one at a time. Wait for the pool to settle before proceeding:
-
-```bash
 oc wait mcp/worker --for=condition=Updated=True --timeout=30m
 ```
 
-> **Note:** On a single-node cluster apply `helm/osc/templates/kubelet-config-sno.yaml` instead (targets the `master` MCP), and run `oc wait mcp/master --for=condition=Updated=True --timeout=30m`. The `make setup-kata` target detects the cluster type and applies the correct file automatically.
+**Single-node cluster / SNO** (node has both `master` and `worker` roles — the node is managed by the `master` MCP):
+
+```bash
+oc apply -f helm/osc/templates/kubelet-config-sno.yaml
+oc wait mcp/master --for=condition=Updated=True --timeout=30m
+```
+
+Both files create a `KubeletConfig` named `kata-runtime-request-timeout` with `runtimeRequestTimeout: 10m0s` — the only difference is the `machineConfigPoolSelector` (`worker` vs `master`). Applying the wrong one results in the timeout not taking effect and pods failing with `RST_STREAM CANCEL` during image pull. The `make setup-kata` target auto-detects the cluster type by checking for nodes that are workers but not masters, and applies the correct file.
 
 ---
 
