@@ -864,7 +864,7 @@ The Intel Device Plugin Operator manages the SGX Device Plugin DaemonSet that ex
 4. Select it (certified — Intel source)
 5. Click **Install**, leave **Installation mode** as **All namespaces on the cluster** (the only supported mode), set **Installed Namespace** to `intel-dcap`, leave the channel as **alpha**, click **Install**
 6. Go to **Operators → Installed Operators**, select namespace `intel-dcap`, wait for status **Succeeded**
-7. **TODO** validate this as not found in Intel documentation -  Grant the `privileged` SCC to the operator's service account (required — the operator runs as UID 65534 and uses deprecated seccomp annotations that only the `privileged` SCC allows):
+7. Grant the `privileged` SCC to the operator's service account (required — the operator runs as UID 65534 and uses deprecated seccomp annotations that only the `privileged` SCC allows):
    ```bash
    oc adm policy add-scc-to-user privileged -z intel-tdx-dcap -n intel-dcap
    ```
@@ -998,7 +998,7 @@ The attestation policy requires five values in RVPS before it will release the m
 | `rtmr_2` | Additional boot measurement | OSC version |
 | `xfam` | QEMU CPU feature mask | OSC version / runtime class |
 
-`tdx_pcr08` is computed at registration time from your namespace and KBS certificate. The four TDX hardware measurements are stable for a given OSC version — the Makefile already contains the correct values for OSC **1.3.1** (see the `TDX_MR_TD` block near `KATA_RUNTIME_CLASS` in the Makefile).
+`tdx_pcr08` is computed at registration time from your namespace and KBS certificate. The four TDX hardware measurements are stable for a given OSC version — the Makefile already contains the correct values for OSC **1.13.1** (see the `TDX_MR_TD` block near `KATA_RUNTIME_CLASS` in the Makefile).
 
 ```bash
 NAMESPACE=<your deployment namespace, e.g. seismic-interpretation>
@@ -1036,7 +1036,7 @@ oc rollout status deployment/trustee-deployment -n trustee-operator-system --tim
 > **Restart required.** The Trustee pod must restart to pick up the updated `reference_value` configmap key. A rollout restart is needed for the new values to take effect.
 
 > **Using a different OSC version?** The OVMF firmware and kata kernel measurements change with each OSC release, so the values in the Makefile will not match your environment. To collect the correct values:
-> 1. Run `./scripts/collect-tdx-measurements.sh $NAMESPACE` — it launches a temporary kata-cc probe pod, extracts the measurements, and deletes the pod when done.
+> 1. TODO - need to fix this script - Run `./scripts/collect-tdx-measurements.sh $NAMESPACE` — it launches a temporary kata-cc probe pod, extracts the measurements, and deletes the pod when done.
 > 2. The script prints the OSC version, a Makefile variable block, and an `export` block.
 > 3. Paste the Makefile block into the Makefile (near `KATA_RUNTIME_CLASS`) and update the OSC version comment.
 > 4. Source the `export` lines into your shell, then run `make setup-attestation NAMESPACE=$NAMESPACE` as normal.
@@ -1056,6 +1056,15 @@ MODEL_ENCRYPTION_KEY=7f27f40d746b5d92c2d2fe744096b0712ef9951955de9773b3eb20e2be0
 ```
 
 > **Note:** This key is intentionally public. The model it protects — a U-Net trained on the Dutch F3 benchmark dataset — is MIT-licensed and not proprietary. The purpose of this quickstart is to demonstrate the attestation and key release mechanism, not to protect a sensitive model. In a real deployment the encryption key must be kept secret.
+
+To register automatically:
+
+```bash
+NAMESPACE=<your deployment namespace, e.g. seismic-interpretation>
+make setup-attestation NAMESPACE=$NAMESPACE
+```
+
+Or follow the manual steps below. The commands build the image verification policy for your namespace and registry, then create (or update) the namespace-scoped Secret in `trustee-operator-system` and register it with KBS. Set `REGISTRY` to match the registry where your images are published, or leave it unset to use the published quickstart images at `quay.io/rh-ai-quickstart`.
 
 ```bash
 NAMESPACE=<your deployment namespace, e.g. seismic-interpretation>
@@ -1093,15 +1102,6 @@ oc patch kbsconfig trusteeconfig-kbs-config \
 
 oc rollout status deployment/trustee-deployment -n trustee-operator-system --timeout=2m
 ```
-
-Or equivalently:
-
-```bash
-NAMESPACE=<your deployment namespace, e.g. seismic-interpretation>
-make setup-attestation NAMESPACE=$NAMESPACE
-```
-
-> `make setup-intel-tee` (or `make setup-amd-tee`) runs the hardware prerequisite kernel parameter step. `make setup-kata` runs Part 1 Steps 1–2. `make setup-trustee-in-cluster` runs Trustee setup Steps 1–5 automatically (including Step 3 if `NRAS_API_KEY` is supplied). `make setup-attestation` performs Trustee setup Steps 6 and 7: it computes and registers `tdx_pcr08` plus any `TDX_MR_TD` / `TDX_XFAM` / `TDX_RTMR_1` / `TDX_RTMR_2` values exported in the shell, then registers the three KBS secrets. Export the TDX hardware values before running it to register all five RVPS entries in a single pass.
 
 ---
 
