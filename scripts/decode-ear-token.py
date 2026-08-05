@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 """
 Decode an EAR (Entity Attestation Report) JWT token from CDH and display trust claims
-with full evidence details and optional actual-vs-expected measurement comparison.
+with a top-level summary of issues and full evidence details.
 
 Reads the CDH /aa/token JSON response from stdin:
   {"token": "<JWT>", "tee_keypair": "..."}
-
 Or accepts a raw JWT string directly.
 
 Usage:
-    # Basic:
     curl -s http://127.0.0.1:8006/aa/token?token_type=kbs | python3 scripts/decode-ear-token.py
 
     # With expected TDX measurements for mismatch detection:
@@ -30,12 +28,12 @@ import argparse
 AFFIRMING_MIN = 2
 AFFIRMING_MAX = 31
 
-# Fields where we can compare actual vs. expected (Makefile variable name → evidence key)
-TDX_MEASUREMENT_FIELDS = {
-    'mr_td':  'TDX_MR_TD',
-    'xfam':   'TDX_XFAM',
-    'rtmr_1': 'TDX_RTMR_1',
-    'rtmr_2': 'TDX_RTMR_2',
+# Evidence keys that map to Makefile TDX_* variables
+MEASUREMENT_KEYS = {
+    'mr_td':  ('TDX_MR_TD',  '--mr-td'),
+    'xfam':   ('TDX_XFAM',   '--xfam'),
+    'rtmr_1': ('TDX_RTMR_1', '--rtmr-1'),
+    'rtmr_2': ('TDX_RTMR_2', '--rtmr-2'),
 }
 
 
@@ -53,85 +51,181 @@ def decode_jwt_payload(token):
 
 
 def normalize_hex(val):
-    """Strip 0x prefix and lowercase for comparison."""
     return str(val).lower().lstrip('0x') if val else ''
 
 
-def print_field(key, val, indent=8, expected=None):
-    """Print a single evidence field, with optional actual-vs-expected comparison."""
-    prefix = ' ' * indent
-    norm_val = normalize_hex(val)
-    norm_exp = normalize_hex(expected) if expected else ''
+def collect_submod_data(sub, expected):
+    """
+    Return a dict describing a submod's claims, evidence, and any detected issues.
+    """
+    tv = sub.get('ear.trustworthiness-vector', {})
+    status = sub.get('ear.status', 'unknown')
 
-    if expected:
-        match = norm_val == norm_exp
-        tag = 'MATCH    ' if match else 'MISMATCH <--'
-        print(f"{prefix}{key:<30} {val}")
-        print(f"{prefix}{'':30} expected: {expected}  [{tag}]")
-    else:
-        if isinstance(val, dict):
-            print(f"{prefix}{key}:")
-            for k, v in sorted(val.items()):
-                print_field(k, v, indent + 2)
-        elif isinstance(val, list):
-            if all(isinstance(x, str) and len(x) < 80 for x in val):
-                for i, item in enumerate(val):
-                    print_field(f"{key}[{i}]", item, indent)
-            else:
-                print(f"{prefix}{key}: {json.dumps(val)}")
-        else:
-            print(f"{prefix}{key:<30} {val}")
+    ev = sub.get('ear.veraison.annotated-evidence', {})
+    if isinstance(ev, str):
+        try:
+            ev = json.loads(ev)
+        except Exception:
+            ev = {}
+
+    # Expand rtmr array form into rtmr_0 .. rtmr_3
+    rtmr_arr = ev.get('rtmr')
+    if isinstance(rtmr_arr, list):
+        for i, r in enumerate(rtmr_arr):
+            ev.setdefault(f'rtmr_{i}', r)
+
+    issues = []
+
+    # Check each trustworthiness vector claim
+    for claim in ('executables', 'hardware', 'configuration'):
+        val = tv.get(claim)
+        if val is None or affirming(val):
+            continue
+
+        issue = {'claim': claim, 'value': val, 'details': []}
+
+        if claim == 'hardware':
+            tcb = ev.get('tcb_status')
+            if tcb:
+                issue['details'].append(f"tcb_status: {tcb}")
+                if tcb != 'UpToDate':
+                    issue['details'].append("Cause: TDX microcode/firmware is out of date")
+                    issue['details'].append("Fix option 1 (correct): update host TDX microcode/firmware")
+                    issue['details'].append("Fix option 2 (quick):   exclude hardware check from resource policy")
+            advisory = ev.get('advisory_ids') or ev.get('advisoryIDs')
+            if advisory:
+                issue['details'].append(f"Advisory IDs: {advisory}")
+
+        elif claim == 'executables':
+            issue['details'].append("Cause: one or more TDX measurements do not match RVPS reference values")
+            for key in ('mr_td', 'rtmr_0', 'rtmr_1', 'rtmr_2', 'rtmr_3', 'xfam'):
+                actual = ev.get(key)
+                if actual is None:
+                    continue
+                exp = expected.get(key, '')
+                if exp:
+                    match = normalize_hex(actual) == normalize_hex(exp)
+                    tag = 'MATCH' if match else 'MISMATCH'
+                    issue['details'].append(
+                        f"{key}: actual   = {actual}")
+                    issue['details'].append(
+                        f"{'':>len(key)}  expected = {exp}  [{tag}]")
+                else:
+                    issue['details'].append(f"{key}: {actual}  (no expected value to compare)")
+            if not expected:
+                issue['details'].append(
+                    "Pass --mr-td/--xfam/--rtmr-1/--rtmr-2 or set TDX_* env vars for mismatch comparison")
+
+        elif claim == 'configuration':
+            issue['details'].append("Cause: initdata hash (tdx_pcr08) does not match RVPS reference value")
+            issue['details'].append("Fix: run 'make setup-attestation NAMESPACE=<ns>'")
+            rtmr3 = ev.get('rtmr_3')
+            if rtmr3:
+                issue['details'].append(f"rtmr_3 (initdata binding): {rtmr3}")
+
+        issues.append(issue)
+
+    return {
+        'status': status,
+        'tv': tv,
+        'ev': ev,
+        'issues': issues,
+    }
 
 
-def show_evidence(ev, expected_measurements):
-    """Print all evidence fields, grouping TDX measurements and NVIDIA separately."""
-    if not ev or not isinstance(ev, dict):
-        print("        (no annotated evidence)")
+def print_summary(all_data, verifier):
+    total_issues = sum(len(d['issues']) for d in all_data.values())
+
+    print(f"\n=== SUMMARY ===")
+    print(f"Verifier: {verifier}")
+
+    if total_issues == 0:
+        print("Status:   ALL CLAIMS AFFIRMING — resource policy should allow key release.\n")
         return
 
-    # Separate top-level keys into categories
+    print(f"Status:   {total_issues} issue(s) found — resource policy will DENY key release.\n")
+
+    n = 0
+    for name, data in sorted(all_data.items()):
+        for issue in data['issues']:
+            n += 1
+            claim = issue['claim']
+            val = issue['value']
+            print(f"  Issue {n}: [{name}] {claim} = {val}  (non-affirming, expected 2–31)")
+            for line in issue['details']:
+                print(f"           {line}")
+            print()
+
+
+def print_evidence_section(name, data, expected):
+    status = data['status']
+    tv = data['tv']
+    ev = data['ev']
+
+    marker = 'OK  ' if status == 'affirming' else 'FAIL'
+    print(f"  [{marker}] {name}  (status: {status})")
+
+    print("    Trustworthiness vector:")
+    for claim in ('executables', 'hardware', 'configuration'):
+        val = tv.get(claim)
+        if val is None:
+            continue
+        if affirming(val):
+            label = 'affirming'
+        else:
+            label = 'NON-AFFIRMING  <-- blocking'
+        print(f"        {claim:<22} {val:>3}  ({label})")
+
     nvidia = ev.get('nvidia', {})
-    tdx_keys = sorted(k for k in ev if k != 'nvidia')
+    tdx_keys = [k for k in ev if k != 'nvidia']
 
     if tdx_keys:
-        print("      TDX / CPU Evidence:")
-        for key in tdx_keys:
+        print("    TDX / CPU Evidence:")
+        for key in sorted(tdx_keys):
             val = ev[key]
-            exp = expected_measurements.get(key)
-            print_field(key, val, indent=8, expected=exp)
-
-        # Also check rtmr array form: some versions emit rtmr: ["r0","r1","r2","r3"]
-        rtmr_arr = ev.get('rtmr')
-        if isinstance(rtmr_arr, list):
-            for i, r in enumerate(rtmr_arr):
-                exp = expected_measurements.get(f'rtmr_{i}')
-                print_field(f"rtmr[{i}]", r, indent=8, expected=exp)
+            exp = expected.get(key, '')
+            prefix = '        '
+            if exp:
+                match = normalize_hex(val) == normalize_hex(exp)
+                tag = 'MATCH    ' if match else 'MISMATCH <--'
+                print(f"{prefix}{key:<30} {val}")
+                print(f"{prefix}{'':30} expected: {exp}  [{tag}]")
+            elif isinstance(val, (dict, list)):
+                print(f"{prefix}{key:<30} {json.dumps(val)}")
+            else:
+                print(f"{prefix}{key:<30} {val}")
 
     if nvidia and isinstance(nvidia, dict):
-        print("      NVIDIA / GPU Evidence:")
+        print("    NVIDIA / GPU Evidence:")
         for key in sorted(nvidia.keys()):
-            print_field(key, nvidia[key], indent=8)
+            val = nvidia[key]
+            prefix = '        '
+            if isinstance(val, (dict, list)):
+                print(f"{prefix}{key:<30} {json.dumps(val)}")
+            else:
+                print(f"{prefix}{key:<30} {val}")
+
+    print()
 
 
 def main():
     parser = argparse.ArgumentParser(description="Decode EAR JWT and show trust claims")
     parser.add_argument('--mr-td',  default=os.environ.get('TDX_MR_TD',  ''),
-                        help='Expected MR_TD value (or set TDX_MR_TD env var)')
+                        help='Expected MR_TD (or set TDX_MR_TD env var)')
     parser.add_argument('--xfam',   default=os.environ.get('TDX_XFAM',   ''),
-                        help='Expected XFAM value (or set TDX_XFAM env var)')
+                        help='Expected XFAM (or set TDX_XFAM env var)')
     parser.add_argument('--rtmr-1', default=os.environ.get('TDX_RTMR_1', ''),
-                        help='Expected RTMR_1 value (or set TDX_RTMR_1 env var)')
+                        help='Expected RTMR_1 (or set TDX_RTMR_1 env var)')
     parser.add_argument('--rtmr-2', default=os.environ.get('TDX_RTMR_2', ''),
-                        help='Expected RTMR_2 value (or set TDX_RTMR_2 env var)')
+                        help='Expected RTMR_2 (or set TDX_RTMR_2 env var)')
     args = parser.parse_args()
 
-    expected_measurements = {
+    expected = {
         'mr_td':  args.mr_td,
         'xfam':   args.xfam,
         'rtmr_1': args.rtmr_1,
         'rtmr_2': args.rtmr_2,
     }
-    has_expected = any(v for v in expected_measurements.values())
 
     raw = sys.stdin.read().strip()
     if not raw:
@@ -151,69 +245,20 @@ def main():
         sys.exit(1)
 
     verifier = claims.get('ear.verifier-id', {}).get('build', 'unknown')
-    print(f"\n=== EAR Trust Claims ===")
-    print(f"Verifier: {verifier}")
-    if not has_expected:
-        print("  (Pass --mr-td/--xfam/--rtmr-1/--rtmr-2 or set TDX_* env vars for actual-vs-expected comparison)")
 
     submods = claims.get('submods', {})
     if not submods:
+        print(f"\nVerifier: {verifier}")
         print("No submods found in token payload.")
         return
 
-    blocking = []
-    for name in sorted(submods):
-        sub = submods[name]
-        tv = sub.get('ear.trustworthiness-vector', {})
-        status = sub.get('ear.status', 'unknown')
-        marker = 'OK  ' if status == 'affirming' else 'FAIL'
-        print(f"\n  [{marker}] {name}  (status: {status})")
+    all_data = {name: collect_submod_data(sub, expected) for name, sub in submods.items()}
 
-        print("    Trustworthiness vector:")
-        for key in ('executables', 'hardware', 'configuration'):
-            val = tv.get(key)
-            if val is None:
-                continue
-            if affirming(val):
-                label = 'affirming'
-            else:
-                label = 'NON-AFFIRMING  <-- blocking'
-                blocking.append((name, key, val))
-            print(f"        {key:<22} {val:>3}  ({label})")
+    print_summary(all_data, verifier)
 
-        ev = sub.get('ear.veraison.annotated-evidence', {})
-        if isinstance(ev, str):
-            try:
-                ev = json.loads(ev)
-            except Exception:
-                ev = {}
-
-        print()
-        show_evidence(ev, expected_measurements)
-
-    print()
-    if blocking:
-        print("  Policy will DENY — non-affirming claims:")
-        for name, key, val in blocking:
-            print(f"    {name}.{key} = {val}")
-        print()
-        print("  Fix options:")
-        if any(k == 'hardware' and n.startswith('cpu') for n, k, v in blocking):
-            print("    CPU hardware=97: tcb_status is OutOfDate.")
-            print("      Option 1 (correct): update TDX microcode/firmware on the host.")
-            print("      Option 2 (quick):   relax resource policy to exclude CPU hardware check.")
-        if any(k == 'executables' for n, k, v in blocking):
-            print("    Executables non-affirming: MR_TD, RTMR_1, or RTMR_2 may not match RVPS reference values.")
-            print("      Run: scripts/collect-tdx-measurements.sh, export the values,")
-            print("           then: make setup-attestation NAMESPACE=<ns> TDX_MR_TD=... TDX_RTMR_1=... TDX_RTMR_2=...")
-        if any(k == 'configuration' for n, k, v in blocking):
-            print("    Configuration non-affirming: initdata hash (tdx_pcr08) may not match RVPS.")
-            print("      Run: make setup-attestation NAMESPACE=<ns>")
-        if any(k == 'hardware' and n.startswith('gpu') for n, k, v in blocking):
-            print("    GPU hardware non-affirming: NVIDIA HW attestation failed.")
-            print("      Check NRAS connectivity and GPU attestation policy.")
-    else:
-        print("  All trust claims affirming — resource policy should allow key release.")
+    print("=== DETAIL ===\n")
+    for name in sorted(all_data):
+        print_evidence_section(name, all_data[name], expected)
 
 
 if __name__ == '__main__':
