@@ -247,7 +247,7 @@ flowchart LR
 |---|---|---|
 | GPU | NVIDIA GPU with Confidential Computing mode support (e.g. H100, H200, B100) | Hopper architecture and later support NVIDIA CC mode and NRAS attestation. Consumer GPUs (RTX 3090, RTX 4090) and older data center GPUs (A100) do not support CC mode and cannot pass the NVIDIA attestation check. |
 | CPU | Intel® Xeon 5th Gen+ (Emerald Rapids) with TDX, or AMD EPYC 9004 series (Genoa) with SEV-SNP | TEE must be enabled in the BIOS. Earlier CPU generations may not support TDX or SEV-SNP. |
-| RAM | 64GB | |
+| RAM | 128GB | The kata VM takes 24GB, OCP control plane requires ~32GB, and GPU/OSC/Trustee system pods consume additional memory. 64GB is insufficient in practice. |
 | Storage | 50GB | For ModelCar image cache |
 
 **NOTE:** A CPU TEE (Intel® TDX or AMD SEV-SNP) and NVIDIA CC mode are **both** hard requirements — the Key Broker Server will not release the model decryption key unless all three attestation checks pass.
@@ -339,7 +339,14 @@ Save and reboot the server. Full Intel hardware setup guide: https://cc-enabling
 After the server comes back, verify TDX is active:
 
 ```bash
-oc debug node/<node-name> -- chroot /host dmesg | grep -i tdx
+# List worker nodes to identify the target hardware node:
+oc get nodes -l node-role.kubernetes.io/worker -o custom-columns=NAME:.metadata.name --no-headers
+# Set NODE to the target node (auto-detected on single-node clusters):
+NODE=$(oc get nodes -l 'node-role.kubernetes.io/worker,!node-role.kubernetes.io/master' \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || \
+    oc get nodes -l node-role.kubernetes.io/worker \
+    -o jsonpath='{.items[0].metadata.name}')
+oc debug node/$NODE -- chroot /host dmesg | grep -i tdx
 ```
 
 Expected output includes `virt/tdx: BIOS enabled` and `virt/tdx: module initialized`. If you see no tdx lines, the BIOS settings were not saved correctly.
@@ -349,7 +356,14 @@ Expected output includes `virt/tdx: BIOS enabled` and `virt/tdx: module initiali
 Access the BIOS setup utility and enable SEV-SNP under the memory/security settings (path varies by server vendor — consult your server's BIOS reference manual). Verify with:
 
 ```bash
-oc debug node/<node-name> -- chroot /host dmesg | grep -i snp
+# List worker nodes to identify the target hardware node:
+oc get nodes -l node-role.kubernetes.io/worker -o custom-columns=NAME:.metadata.name --no-headers
+# Set NODE to the target node (auto-detected on single-node clusters):
+NODE=$(oc get nodes -l 'node-role.kubernetes.io/worker,!node-role.kubernetes.io/master' \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || \
+    oc get nodes -l node-role.kubernetes.io/worker \
+    -o jsonpath='{.items[0].metadata.name}')
+oc debug node/$NODE -- chroot /host dmesg | grep -i snp
 ```
 
 To apply the kernel parameters automatically (cluster-admin required):
@@ -438,7 +452,14 @@ On single-node clusters the API server itself reboots during this wait, so the c
 After the node comes back, verify TDX is active in the kernel:
 
 ```bash
-oc debug node/<node-name> -- chroot /host dmesg | grep -i tdx
+# List worker nodes to identify the target hardware node:
+oc get nodes -l node-role.kubernetes.io/worker -o custom-columns=NAME:.metadata.name --no-headers
+# Set NODE to the target node (auto-detected on single-node clusters):
+NODE=$(oc get nodes -l 'node-role.kubernetes.io/worker,!node-role.kubernetes.io/master' \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || \
+    oc get nodes -l node-role.kubernetes.io/worker \
+    -o jsonpath='{.items[0].metadata.name}')
+oc debug node/$NODE -- chroot /host dmesg | grep -i tdx
 # Expected: "virt/tdx: BIOS enabled" and "virt/tdx: module initialized"
 ```
 
@@ -594,7 +615,10 @@ EOF
 Verify NFD has labeled the node with the TEE platform:
 
 ```bash
-oc get node <node-name> --show-labels | tr ',' '\n' | grep -E "tdx|snp"
+# List GPU nodes to identify the target node; on multi-node clusters, set NODE to the specific one:
+oc get nodes -l nvidia.com/gpu.present=true -o custom-columns=NAME:.metadata.name --no-headers
+NODE=$(oc get nodes -l nvidia.com/gpu.present=true -o jsonpath='{.items[0].metadata.name}')
+oc get node $NODE --show-labels | tr ',' '\n' | grep -E "tdx|snp"
 # Expected (Intel TDX): both of these labels should be present:
 #   feature.node.kubernetes.io/cpu-security.tdx.enabled=true  (NFD built-in detector)
 #   intel.feature.node.kubernetes.io/tdx=true                 (NodeFeatureRule label used by OSC)
@@ -722,19 +746,23 @@ oc get nodes -l nvidia.com/gpu.present=true \
 Label the chosen node(s) for VM passthrough. Repeat for each node you want to dedicate:
 
 ```bash
-# Label a specific node (replace <node-name> with the actual node name):
+# Label a specific node — list GPU nodes first, then label the chosen one:
+oc get nodes -l nvidia.com/gpu.present=true -o custom-columns=NAME:.metadata.name --no-headers
 oc label node <node-name> nvidia.com/gpu.workload.config=vm-passthrough --overwrite
 
-# Or to label every GPU node (use only if all GPU nodes are dedicated to kata):
-# for NODE in $(oc get nodes -l nvidia.com/gpu.present=true -o name); do
-#   oc label $NODE nvidia.com/gpu.workload.config=vm-passthrough --overwrite
+# To label every GPU node (use only if all GPU nodes are dedicated to kata):
+# for n in $(oc get nodes -l nvidia.com/gpu.present=true -o jsonpath='{.items[*].metadata.name}'); do
+#   oc label node $n nvidia.com/gpu.workload.config=vm-passthrough --overwrite
 # done
 ```
 
 Store the node name for the verification commands below. Use the plain node name — do **not** use `oc get nodes -o name` as it outputs `node/<name>` which breaks subsequent `oc get node` commands:
 
 ```bash
-GPU_NODE=<node-name>   # e.g. GPU_NODE=rh34-jharmiso-mig-0630-gpu01
+# On single-node / SNO clusters (auto-detected):
+GPU_NODE=$(oc get nodes -l nvidia.com/gpu.present=true -o jsonpath='{.items[0].metadata.name}')
+# On multi-node clusters, set GPU_NODE to the specific node you labeled above:
+# GPU_NODE=<node-name>   # e.g. GPU_NODE=rh34-jharmiso-mig-0630-gpu01
 ```
 
 Wait for the Sandbox Device Plugin pod to appear on the GPU node and for `nvidia.com/pgpu` to become allocatable:

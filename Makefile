@@ -98,6 +98,8 @@ help:
 	@echo "  Prerequisites:"
 	@echo "    check-prereqs    - Verify OpenShift version, CPU TEE support, required operators,"
 	@echo "                       kernel parameters, and local tools (oc, helm, cosign, etc.)"
+	@echo "    status-check     - Show cluster-wide CoCo status: nodes, BIOS preflight, operators,"
+	@echo "                       runtime classes, NFD labels, MCP state, and problem pods"
 	@echo ""
 	@echo "  Attestation (cluster-admin, run once per cluster before install):"
 	@echo "    setup-intel-tee          - Apply Intel TDX + IOMMU kernel parameters, reboot, verify TDX active"
@@ -354,6 +356,10 @@ check-prereqs:
 	else \
 	    echo "  All prerequisites satisfied."; \
 	fi
+
+.PHONY: status-check
+status-check:
+	@bash scripts/status.sh
 
 .PHONY: build-modelcar
 build-modelcar:
