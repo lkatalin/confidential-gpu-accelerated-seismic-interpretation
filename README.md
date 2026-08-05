@@ -481,7 +481,7 @@ make check-prereqs
 >
 > PCCS only serves Intel-signed certificates — a compromised PCCS cannot forge trust or produce fake attestation quotes, since all certificates are verified against Intel's root CA. However, a stale or tampered PCCS could serve outdated revocation lists (CRLs) or TCB (Trusted Computing Base) data, which would prevent the system from detecting known vulnerabilities in platform firmware. For this reason, PCCS should run on trusted, well-maintained infrastructure — not on the same untrusted workload cluster — and should be kept updated so that revocation and TCB information stays current.
 >
-> This quickstart deploys QGS and PCCS via the Intel TDX DCAP Operator as part of the [Intel TDX Quote Generation Service setup](#intel-tdx-quote-generation-service-setup--application-deployer-cluster-admin-once-per-cluster-intel-tdx-only) step. AMD SEV-SNP does not require PCCS.
+> This quickstart deploys QGS via the Intel TDX DCAP Operator using `platformRegistration.Online` — QGS contacts Intel PCS directly with an API key, so no local PCCS is required. AMD SEV-SNP does not require QGS or PCCS.
 
 ---
 
@@ -823,30 +823,13 @@ Both files create a `KubeletConfig` named `kata-runtime-request-timeout` with `r
 
 > **AMD SEV-SNP clusters:** Skip this section entirely. AMD SNP attestation does not use an SGX-based Quoting Enclave — skip directly to [Trustee setup](#trustee-setup--model-owner-cluster-admin-once-per-cluster).
 
-When a pod runs inside a kata TDX VM and needs to attest to Trustee, the CDH (Confidential Data Hub) running inside the VM calls the CPU hardware to produce a TDX attestation quote. Generating that quote requires a **Quote Generation Service (QGS)** running on the host. In OSC 1.13, quote generation is **kernel-mediated**: the host kernel's TDX driver connects to QGS via a unix socket (`/var/run/tdx-qgs/qgs.socket`), and QGS runs an Intel SGX Quoting Enclave to sign the hardware TDX report into a verifiable DCAP quote. The `tdx_quote_generation_service_socket_port = 0` setting in the kata TDX configuration (applied by the `99-enable-intel-tdx` MachineConfig) enables this path — QEMU is not involved in quote generation.
+When a kata TDX pod attests to Trustee, the CDH inside the VM generates a TDX attestation quote via a **Quote Generation Service (QGS)** running on the host. In OSC 1.13, quote generation is kernel-mediated: the host TDX driver connects to QGS via a unix socket (`/var/run/tdx-qgs/qgs.socket`), and QGS runs an Intel SGX Quoting Enclave to sign the hardware TDX report into a verifiable DCAP quote. The `tdx_quote_generation_service_socket_port = 0` setting in the kata TDX configuration (applied by the `99-enable-intel-tdx` MachineConfig) enables this path.
 
-QGS also needs a **Provisioning Certificate Caching Service (PCCS)** to fetch the PCK (Platform Certification Key) certificate chain from Intel PCS. PCCS caches those certificates locally so QGS can build a complete DCAP quote chain.
+QGS is deployed by the **Intel TDX DCAP Operator**, which also installs the **Intel SGX Device Plugin** that exposes SGX hardware resources to the QGS pod. The `TdxQuoteGenerationService` CR used here uses `platformRegistration.Online` — QGS contacts Intel PCS directly with an API key, so no local PCCS is needed. For full details see the [OpenShift Sandboxed Containers 1.13 documentation](https://docs.redhat.com/en/documentation/openshift_sandboxed_containers/1.13).
 
 > **Upgrading from OSC 1.12:** If you previously deployed Intel TDX remote attestation using OSC 1.12, attestation will not work with OSC 1.13 without a full reinstall. You must uninstall the existing DCAP deployment and **toggle Intel SGX Factory Reset in the BIOS** before reinstalling the Intel TDX DCAP Operator per the steps below. The BIOS reset clears stale platform provisioning state that prevents the new QGS from registering correctly with Intel PCS.
 
-Both QGS and PCCS are deployed and managed by the **Intel TDX DCAP Operator** (`intel-tdx-dcap-operator` from the Red Hat Certified catalog). The operator takes a `TdxQuoteGenerationService` CR and handles pod lifecycle, SCC configuration, and certificate setup automatically.
-
-The QGS pod requests SGX device resources (`sgx.intel.com/enclave`, `sgx.intel.com/provision`) provided by the **Intel SGX Device Plugin**, which requires the **Intel Device Plugin Operator** to be installed first.
-
-**Prerequisites:**
-- `setup-kata` complete (NFD running and `intel.feature.node.kubernetes.io/tdx` label present on the kata node)
-- Intel PCS API key (Step 0 below)
-- Outbound HTTPS from the workload cluster to `api.trustedservices.intel.com` (QGS fetches PCK certificates from here)
-
-To perform automatically (after Step 0 below is complete):
-
-```bash
-make setup-dcap INTEL_API_KEY=<your-intel-pcs-api-key>
-```
-
-Or follow the manual steps below.
-
-#### Step 0: Get an Intel PCS API key
+#### Step 1: Get an Intel PCS API key
 
 QGS uses the Intel Provisioning Certificate Service (PCS) to fetch the PCK (Platform Certification Key) certificate chain needed to build a verifiable TDX attestation quote. Access to PCS requires a free Intel API subscription key.
 
@@ -858,11 +841,19 @@ QGS uses the Intel Provisioning Certificate Service (PCS) to fetch the PCK (Plat
 
 The key is a 32-character hexadecimal string. Keep it secret — it is passed to `make setup-dcap` and stored in the cluster as a Kubernetes Secret in the `intel-dcap` namespace.
 
-#### Step 1: Install the Intel Device Plugin Operator
+To install the operators automatically (cluster-admin required):
+
+```bash
+make setup-dcap INTEL_API_KEY=<your-intel-pcs-api-key>
+```
+
+Or follow the manual steps below.
+
+#### Step 2: Install the Intel Device Plugin Operator
 
 The Intel Device Plugin Operator manages the SGX Device Plugin DaemonSet that exposes `sgx.intel.com/enclave` and `sgx.intel.com/provision` resources on SGX-capable nodes. QGS requests these resources so the scheduler places it only on nodes with the correct hardware and device access.
 
-`make setup-dcap` installs this automatically. To install manually instead:
+To install manually:
 
 1. Go to **Operators → OperatorHub**
 2. Search for **Intel Device Plugins Operator**
@@ -870,9 +861,9 @@ The Intel Device Plugin Operator manages the SGX Device Plugin DaemonSet that ex
 4. Click **Install**, set the namespace to `intel-dcap` (create it first if needed), set **Update approval** to **Manual**, click **Install**
 5. Go to **Operators → Installed Operators**, select namespace `intel-dcap`, approve the InstallPlan, wait for status **Succeeded**
 
-#### Step 2: Install the Intel TDX DCAP Operator and deploy QGS
+#### Step 3: Install the Intel TDX DCAP Operator and deploy QGS
 
-`make setup-dcap` installs this automatically. To install manually instead:
+To install manually instead:
 
 1. Create the `intel-dcap` namespace if it does not already exist:
    ```bash
@@ -906,7 +897,7 @@ make verify-dcap
 - ✓ `intel-device-plugins-operator-*` CSV `Succeeded` in `intel-dcap`
 - ✓ `intel-tdx-dcap-operator-*` CSV `Succeeded` in `intel-dcap`
 - ✓ `tdxquotegenerationservices.trustedservices.intel.com` shows `intel-tdx-dcap` with `READY: True`
-- ✓ `intel-tdx-dcap-qgs-*` pod `2/2 Running` in `intel-dcap` (QGS and PCCS run as sidecars in the same pod)
+- ✓ `intel-tdx-dcap-qgs-*` pod `Running` in `intel-dcap`
 
 ---
 
@@ -921,12 +912,6 @@ make setup-trustee-in-cluster
 ```
 
 Or follow the manual steps below.
-
-**Prerequisites:**
-- Logged in as cluster-admin
-- `kata-cc` runtimeClass available (Kata containers setup above complete)
-- cert-manager installed (`openshift-cert-manager-operator` namespace)
-- NVIDIA NGC personal API key for NRAS — required for GPU CC attestation verification. Create one at [ngc.nvidia.com](https://ngc.nvidia.com) (free account) with **Public API Endpoints** selected under Services Included (see Step 3 below). Without this, the Trustee AS cannot contact NRAS to verify the GPU CC report, and attestation will fail the `hardware` check.
 
 #### Step 1: Install the Trustee operator
 
