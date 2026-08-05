@@ -24,42 +24,28 @@ tdx_pcr08 is the vTPM PCR8 value after extending the initdata hash:
 Registering this in RVPS prevents the cluster admin from modifying the initdata
 (KBS URL, image policy URI, namespace) without failing the configuration check.
 """
+import argparse
 import base64
 import gzip
 import hashlib
 import os
 import sys
 
-pcr8_only = "--pcr8-only" in sys.argv
-args = [a for a in sys.argv[1:] if not a.startswith("--")]
+parser = argparse.ArgumentParser()
+parser.add_argument("kbs_url")
+parser.add_argument("namespace")
+parser.add_argument("--pcr8-only", action="store_true")
+parser.add_argument("--policy-mode", default="locked", choices=["dev", "locked"])
+parser.add_argument("--app-image", default="")
+parser.add_argument("--model-image", default="")
+parsed = parser.parse_args()
 
-if len(args) != 2:
-    print(f"Usage: {sys.argv[0]} <KBS_URL> <NAMESPACE> [--pcr8-only] [--policy-mode dev|locked] [--app-image <repo>] [--model-image <repo>]", file=sys.stderr)
-    sys.exit(1)
-
-kbs_url = args[0]
-namespace = args[1]
-
-policy_mode = "locked"
-app_image_repo = ""
-model_image_repo = ""
-i = 1
-while i < len(sys.argv):
-    if sys.argv[i] == "--policy-mode" and i + 1 < len(sys.argv):
-        policy_mode = sys.argv[i + 1]
-        i += 2
-    elif sys.argv[i] == "--app-image" and i + 1 < len(sys.argv):
-        app_image_repo = sys.argv[i + 1].split(":")[0]
-        i += 2
-    elif sys.argv[i] == "--model-image" and i + 1 < len(sys.argv):
-        model_image_repo = sys.argv[i + 1].split(":")[0]
-        i += 2
-    else:
-        i += 1
-
-if policy_mode not in ("dev", "locked"):
-    print(f"Error: --policy-mode must be 'dev' or 'locked', got '{policy_mode}'", file=sys.stderr)
-    sys.exit(1)
+pcr8_only = parsed.pcr8_only
+kbs_url = parsed.kbs_url
+namespace = parsed.namespace
+policy_mode = parsed.policy_mode
+app_image_repo = parsed.app_image.split(":")[0] if parsed.app_image else ""
+model_image_repo = parsed.model_image.split(":")[0] if parsed.model_image else ""
 
 if policy_mode == "locked" and (not app_image_repo or not model_image_repo):
     print("Error: --app-image and --model-image are required when --policy-mode=locked", file=sys.stderr)
