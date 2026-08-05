@@ -895,10 +895,16 @@ make verify-dcap
 
 > **In this quickstart** the application deployer also runs Trustee setup for demo convenience. In production this section is performed by the model owner on independently controlled infrastructure. Steps 6 and 7 are always model owner responsibilities regardless of deployment topology.
 
+The Trustee Attestation Service contacts NVIDIA NRAS (`nras.attestation.nvidia.com`) to verify GPU CC reports. NRAS requires an NGC personal API key. To create one at [ngc.nvidia.com](https://ngc.nvidia.com):
+
+1. Click your name (top right) → **Account Settings** → **Generate API Key**
+2. Set a name (e.g. `NRAS Key`), set expiration, and under **Services Included** check **Public API Endpoints**
+3. Copy the key immediately — it is shown only once
+
 To set up Trustee automatically (cluster-admin required):
 
 ```bash
-make setup-trustee-in-cluster
+make setup-trustee-in-cluster NRAS_API_KEY=<your-ngc-api-key>
 ```
 
 Or follow the manual steps below.
@@ -932,26 +938,10 @@ The Trustee operator derives a `trusteeconfig-https-cert-secret` from `trustee-t
 
 #### Step 3: Create the NRAS API key Secret
 
-The Trustee Attestation Service contacts NVIDIA NRAS (`nras.attestation.nvidia.com`) to verify GPU CC reports. NRAS requires an NGC personal API key.
-
-To create one at [ngc.nvidia.com](https://ngc.nvidia.com):
-
-1. Click your name (top right) → **Account Settings** → **Generate API Key**
-2. Set a name (e.g. `NRAS Key`), set expiration, and under **Services Included** check **Public API Endpoints**
-3. Copy the key immediately — it is shown only once
-
-Then create the Secret:
-
 ```bash
 oc create secret generic nras-api-key \
     -n trustee-operator-system \
     --from-literal=apiKey=<your-ngc-api-key>
-```
-
-Or pass the key to `make setup-trustee-in-cluster`:
-
-```bash
-make setup-trustee-in-cluster NRAS_API_KEY=<your-ngc-api-key>
 ```
 
 Without this Secret, the Trustee AS cannot verify GPU CC reports, and the attestation policy will reject pods because the `hardware` trustworthiness claim will not reach the affirming range.
