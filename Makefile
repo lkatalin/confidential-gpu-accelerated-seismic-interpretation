@@ -1124,7 +1124,9 @@ debug-attestation:
 	    echo "Fetching EAR token..."; \
 	    oc exec -n $(NAMESPACE) $$POD_NAME -- \
 	        curl -s --max-time 30 "http://127.0.0.1:8006/aa/token?token_type=kbs" \
-	        | python3 scripts/decode-ear-token.py; \
+	        | python3 scripts/decode-ear-token.py \
+	            --mr-td "$(TDX_MR_TD)" --xfam "$(TDX_XFAM)" \
+	            --rtmr-1 "$(TDX_RTMR_1)" --rtmr-2 "$(TDX_RTMR_2)"; \
 	else \
 	    POD_NAME="ear-debug-$$$$"; \
 	    echo "No running seismic-app pod found. Starting debug pod $$POD_NAME (kata VM boot takes ~60s)..."; \
@@ -1152,7 +1154,9 @@ debug-attestation:
 	    echo "Fetching EAR token..."; \
 	    oc exec -n $(NAMESPACE) $$POD_NAME -- \
 	        curl -s --max-time 30 "http://127.0.0.1:8006/aa/token?token_type=kbs" \
-	        | python3 scripts/decode-ear-token.py; \
+	        | python3 scripts/decode-ear-token.py \
+	            --mr-td "$(TDX_MR_TD)" --xfam "$(TDX_XFAM)" \
+	            --rtmr-1 "$(TDX_RTMR_1)" --rtmr-2 "$(TDX_RTMR_2)"; \
 	    oc delete pod $$POD_NAME -n $(NAMESPACE) --ignore-not-found; \
 	    echo "Debug pod deleted."; \
 	fi
