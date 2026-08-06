@@ -982,25 +982,55 @@ If `cc.mode.state` is missing or set to `off`, the GPU is not in CC mode. CC mod
 
 ```bash
 oc get daemonset -n nvidia-gpu-operator | grep cc-manager
-oc logs -n nvidia-gpu-operator -l app=nvidia-cc-manager --tail=20
+oc logs -n nvidia-gpu-operator \
+    $(oc get pod -n nvidia-gpu-operator -o name | grep cc-manager | head -1) \
+    --tail=20
 ```
 
 **Verify the GPU is bound to vfio-pci on the passthrough node:**
 
 ```bash
-oc debug node/$GPU_NODE -- chroot /host sh -c \
-    "find /sys/bus/pci/devices/ -name driver -print | xargs ls -la 2>/dev/null | grep -E 'vfio|nvidia'"
+MCD_POD=$(oc get pod -n openshift-machine-config-operator \
+    -l k8s-app=machine-config-daemon --no-headers -o name | head -1 | cut -d/ -f2)
+oc exec -n openshift-machine-config-operator $MCD_POD -- \
+    chroot /rootfs ls -la /sys/bus/pci/drivers/vfio-pci/
 ```
 
-Expected: the GPU PCI device (`0000:XX:00.0`) is linked to `vfio-pci`. If it shows `nvidia` instead, the vfioManager has not yet rebound the device — wait a minute and check again, or check the vfioManager pod logs:
+Expected: the GPU PCI address (`0000:XX:00.0`) appears as a symlink in the vfio-pci driver directory. If it is absent, the vfioManager has not yet rebound the device — wait a minute and check again, or check the vfioManager pod logs:
 
 ```bash
-oc logs -n nvidia-gpu-operator -l app=nvidia-vfio-manager --tail=30
+oc logs -n nvidia-gpu-operator \
+    $(oc get pod -n nvidia-gpu-operator -o name | grep vfio-manager | head -1) \
+    --tail=30
 ```
 
 **If the IOMMU state is already corrupted (IOMMU_IOAS_MAP errors on pod start):**
 
-If pods are already failing with `IOMMU_IOAS_MAP failed: Bad address` in the CRI-O logs, the IOMMU state must be reset before new pods can start. After applying the ClusterPolicy patch above (which causes vfioManager to handle rebinding going forward), force an immediate reset by unbinding and rebinding the GPU from vfio-pci manually:
+If pods are already failing with `IOMMU_IOAS_MAP failed: Bad address` in the CRI-O logs, the IOMMU state must be reset before new pods can start. After applying the ClusterPolicy patch above (which causes vfioManager to handle rebinding going forward), force an immediate reset by unbinding and rebinding the GPU from vfio-pci manually.
+
+> **Warning:** Unbinding the GPU from vfio-pci while a QEMU process is actively holding it (i.e. a kata pod with the GPU is in `Running` state) will immediately crash that QEMU process, dirty-killing the pod and recreating the IOMMU corruption. Only run the unbind/rebind when no Running kata pod is using the GPU. Verify first:
+
+```bash
+# Check for any Running pods using the kata-cc-nvidia-gpu runtime across all namespaces.
+# Do not proceed if any pods are listed here.
+oc get pods -A -o json | python3 -c "
+import json, sys
+pods = json.load(sys.stdin)['items']
+running = [
+    f\"{p['metadata']['namespace']}/{p['metadata']['name']}\"
+    for p in pods
+    if p.get('spec', {}).get('runtimeClassName') == 'kata-cc-nvidia-gpu'
+    and p.get('status', {}).get('phase') == 'Running'
+]
+if running:
+    print('STOP — Running kata GPU pods found. Drain or stop these first:')
+    for p in running: print(' ', p)
+else:
+    print('OK — no Running kata GPU pods. Safe to proceed with unbind/rebind.')
+"
+```
+
+Once confirmed safe, reset the IOMMU state:
 
 ```bash
 # Find the GPU PCI address from the CRI-O logs or from: lspci | grep -i nvidia
