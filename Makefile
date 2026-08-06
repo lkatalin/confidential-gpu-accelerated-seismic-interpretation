@@ -584,22 +584,25 @@ clean-terminating-pods:
 	fi; \
 	echo "Terminating pods:"; \
 	echo "$$TERMINATING" | sed 's/^/  /'; \
-	oc exec -n openshift-machine-config-operator $$MCD_POD -- \
-	    chroot /rootfs sh -c \
-	    'for SID in $$(crictl pods --namespace $(NAMESPACE) --no-trunc -q 2>/dev/null); do \
-	        echo "Stopping sandbox $$SID"; \
-	        crictl stopp "$$SID" 2>/dev/null || true; \
-	        crictl rmp --force "$$SID" 2>/dev/null || true; \
-	        pkill -TERM -f "$$SID" 2>/dev/null || true; \
-	    done; \
-	    sleep 3; \
-	    for SID in $$(crictl pods --namespace $(NAMESPACE) --no-trunc -q 2>/dev/null); do \
-	        echo "Force-killing residual QEMU for $$SID"; \
-	        pkill -KILL -f "$$SID" 2>/dev/null || true; \
-	    done'; \
 	for POD in $$TERMINATING; do \
-	    oc delete pod "$$POD" -n $(NAMESPACE) --force --grace-period=0 2>/dev/null || true; \
-	    echo "Force-deleted: $$POD"; \
+	    echo "--- Stopping kata sandbox for pod: $$POD ---"; \
+	    SID=$$(oc exec -n openshift-machine-config-operator $$MCD_POD -- \
+	        chroot /rootfs crictl pods \
+	        --name "$$POD" --namespace $(NAMESPACE) \
+	        --no-trunc -q 2>/dev/null | head -1); \
+	    if [ -n "$$SID" ]; then \
+	        echo "  Sending QMP powerdown to sandbox $$SID (allows clean VFIO release)..."; \
+	        oc exec -n openshift-machine-config-operator $$MCD_POD -- \
+	            chroot /rootfs crictl stopp "$$SID" 2>/dev/null || true; \
+	        sleep 10; \
+	        oc exec -n openshift-machine-config-operator $$MCD_POD -- \
+	            chroot /rootfs crictl rmp --force "$$SID" 2>/dev/null || true; \
+	        echo "  Sandbox $$SID removed."; \
+	    else \
+	        echo "  No sandbox found for $$POD — CRI-O already cleaned up"; \
+	    fi; \
+	    oc delete pod "$$POD" -n $(NAMESPACE) --grace-period=30 2>/dev/null || true; \
+	    echo "  Pod record deleted."; \
 	done; \
 	echo "=== Done ==="
 

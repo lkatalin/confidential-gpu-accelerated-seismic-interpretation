@@ -20,6 +20,7 @@ spec:
         io.katacontainers.config.hypervisor.kernel_params: "agent.guest_components_rest_api=all"
     spec:
       runtimeClassName: {{ .Values.runtimeClassName }}
+      terminationGracePeriodSeconds: 120
       tolerations:
         {{- toYaml .Values.tolerations | nindent 8 }}
       initContainers:

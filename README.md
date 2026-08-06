@@ -26,6 +26,7 @@ AI-powered classification from North Sea seismic data — running with a three-f
   - [Intel TDX Quote Generation Service setup — application deployer (cluster-admin, once per cluster, Intel TDX only)](#intel-tdx-quote-generation-service-setup--application-deployer-cluster-admin-once-per-cluster-intel-tdx-only)
     - [Step 1: Install the Intel Device Plugin Operator](#step-1-install-the-intel-device-plugin-operator)
     - [Step 2: Install the Intel TDX DCAP Operator and deploy QGS](#step-2-install-the-intel-tdx-dcap-operator-and-deploy-qgs)
+  - [Configure GPU Operator for confidential containers — application deployer (cluster-admin, once per cluster)](#configure-gpu-operator-for-confidential-containers--application-deployer-cluster-admin-once-per-cluster)
   - [Trustee setup — model owner (cluster-admin, once per cluster)](#trustee-setup--model-owner-cluster-admin-once-per-cluster)
     - [Step 1: Install the Trustee operator](#step-1-install-the-trustee-operator)
     - [Step 2: Create the cert-manager Issuer and TLS Certificates](#step-2-create-the-cert-manager-issuer-and-tls-certificates)
@@ -888,6 +889,136 @@ make verify-dcap
 - ✓ `intel-tdx-dcap-operator-*` CSV `Succeeded` in `intel-dcap`
 - ✓ `tdxquotegenerationservices.trustedservices.intel.com` shows `intel-tdx-dcap` with `READY: True`
 - ✓ `intel-tdx-dcap-qgs-*` pod `Running` in `intel-dcap`
+
+---
+
+### Configure GPU Operator for confidential containers — application deployer (cluster-admin, once per cluster)
+
+The kata sandbox workload patch applied in the kata setup step enables GPU passthrough. Confidential GPU workloads using the `kata-cc-nvidia-gpu` runtime require one additional set of ClusterPolicy changes that are specific to CC (confidential computing) mode and are separate from the sandbox workload enablement.
+
+In CC mode the NVIDIA driver runs **inside the kata guest VM** (it is baked into the kata guest OS image provided by OSC). The GPU Operator must not also load the driver on the host — if both `driver.enabled: true` and `vfioManager.enabled: true` are set, the driver daemonset and the vfioManager fight over the GPU. When a kata pod stops, this contention leaves the kernel IOMMU IOAS (I/O Address Space) in a dirty state: the next QEMU process to start cannot map the GPU PCI BARs and fails with `IOMMU_IOAS_MAP failed: Bad address`, preventing all subsequent pods from starting until the GPU is manually rebound to vfio-pci. This is documented in [OpenShift Sandboxed Containers 1.13, section 4.10.6](https://docs.redhat.com/en/documentation/openshift_sandboxed_containers/1.13).
+
+**Verify the current ClusterPolicy state:**
+
+```bash
+oc get clusterpolicy gpu-cluster-policy -o json | python3 -c "
+import json, sys
+d = json.load(sys.stdin)['spec']
+for k in ['driver', 'toolkit', 'devicePlugin', 'vfioManager', 'kataSandboxDevicePlugin', 'sandboxWorkloads']:
+    if k in d:
+        enabled = d[k].get('enabled', '(not set)')
+        print(f'{k}.enabled: {enabled}')
+"
+```
+
+For confidential GPU passthrough the required values are:
+
+| Setting | Required | Reason |
+|---|---|---|
+| `driver.enabled` | `false` | Driver runs inside the kata guest VM, not on the host |
+| `toolkit.enabled` | `false` | Container toolkit not needed on host for kata passthrough |
+| `devicePlugin.enabled` | `false` | Conflicts with the kata-sandbox-device-plugin |
+| `vfioManager.enabled` | `true` | Manages the VFIO binding lifecycle for GPU passthrough |
+| `kataSandboxDevicePlugin.enabled` | `true` | Advertises `nvidia.com/pgpu` resources to the scheduler |
+
+> **Note:** Disabling `driver`, `toolkit`, and `devicePlugin` affects all GPU nodes managed by this ClusterPolicy. If your cluster has GPU nodes serving both standard CUDA workloads (non-kata) and kata CC workloads on different nodes, do not apply this patch without first consulting the NVIDIA GPU Operator documentation on per-node workload configuration. In a cluster dedicated entirely to kata CC GPU workloads, this patch is safe to apply globally.
+
+**Apply the required changes:**
+
+```bash
+oc patch clusterpolicy gpu-cluster-policy --type merge \
+    -p '{"spec":{"driver":{"enabled":false},"toolkit":{"enabled":false},"devicePlugin":{"enabled":false}}}'
+```
+
+Wait for the GPU Operator to reconcile — the driver daemonset will stop and vfioManager will rebind the GPU to vfio-pci:
+
+```bash
+oc get pods -n nvidia-gpu-operator -w
+# Wait until nvidia-driver-daemonset pods are gone and nvidia-vfio-manager is Running
+```
+
+**Verify node labels for the `kata-cc-nvidia-gpu` runtime class:**
+
+The `kata-cc-nvidia-gpu` runtimeClass requires all of the following node labels to be present before the scheduler will place a pod on the node (see OSC 1.13 section 4.10.8):
+
+```bash
+GPU_NODE=$(oc get nodes -l nvidia.com/gpu.present=true -o jsonpath='{.items[0].metadata.name}')
+oc get node $GPU_NODE -o json | python3 -c "
+import json, sys
+labels = json.load(sys.stdin)['metadata']['labels']
+required = [
+    ('feature.node.kubernetes.io/runtime.kata',          'Base Kata label'),
+    ('nvidia.com/gpu.present',                           'GPU present'),
+    ('nvidia.com/gpu.deploy.vfio-manager',               'vfio-manager deployed'),
+    ('nvidia.com/gpu.deploy.kata-sandbox-device-plugin', 'Sandbox device plugin deployed'),
+    ('nvidia.com/cc.mode.state',                         'CC mode state (must be: on)'),
+    ('nvidia.com/cc.ready.state',                        'CC mode ready (must be: true)'),
+    ('nvidia.com/gpu.deploy.cc-manager',                 'CC manager deployed'),
+]
+tee_labels = [
+    ('intel.feature.node.kubernetes.io/tdx', 'Intel TDX'),
+    ('amd.feature.node.kubernetes.io/snp',   'AMD SEV-SNP'),
+]
+print('Required labels:')
+for k, desc in required:
+    v = labels.get(k, '(MISSING)')
+    mark = '✓' if v not in ('(MISSING)',) else '✗'
+    print(f'  {mark} {k}: {v}  [{desc}]')
+print('TEE label (one required):')
+for k, desc in tee_labels:
+    v = labels.get(k, '(absent)')
+    mark = '✓' if v != '(absent)' else ' '
+    print(f'  {mark} {k}: {v}  [{desc}]')
+"
+```
+
+**Expected outcome:**
+- ✓ All eight labels present
+- ✓ `nvidia.com/cc.mode.state: on` — GPU is in NVIDIA Confidential Computing mode
+- ✓ `nvidia.com/cc.ready.state: true` — CC mode initialised and healthy
+- ✓ One of the TEE labels present (`intel.feature.node.kubernetes.io/tdx: true` or `amd.feature.node.kubernetes.io/snp: true`)
+
+If `cc.mode.state` is missing or set to `off`, the GPU is not in CC mode. CC mode is enabled via the NVIDIA CC Manager and requires a supported GPU (H100, H200, B100 or later). Check that the `nvidia-cc-manager` daemonset is running and healthy:
+
+```bash
+oc get daemonset -n nvidia-gpu-operator | grep cc-manager
+oc logs -n nvidia-gpu-operator -l app=nvidia-cc-manager --tail=20
+```
+
+**Verify the GPU is bound to vfio-pci on the passthrough node:**
+
+```bash
+oc debug node/$GPU_NODE -- chroot /host sh -c \
+    "find /sys/bus/pci/devices/ -name driver -print | xargs ls -la 2>/dev/null | grep -E 'vfio|nvidia'"
+```
+
+Expected: the GPU PCI device (`0000:XX:00.0`) is linked to `vfio-pci`. If it shows `nvidia` instead, the vfioManager has not yet rebound the device — wait a minute and check again, or check the vfioManager pod logs:
+
+```bash
+oc logs -n nvidia-gpu-operator -l app=nvidia-vfio-manager --tail=30
+```
+
+**If the IOMMU state is already corrupted (IOMMU_IOAS_MAP errors on pod start):**
+
+If pods are already failing with `IOMMU_IOAS_MAP failed: Bad address` in the CRI-O logs, the IOMMU state must be reset before new pods can start. After applying the ClusterPolicy patch above (which causes vfioManager to handle rebinding going forward), force an immediate reset by unbinding and rebinding the GPU from vfio-pci manually:
+
+```bash
+# Find the GPU PCI address from the CRI-O logs or from: lspci | grep -i nvidia
+MCD_POD=$(oc get pod -n openshift-machine-config-operator \
+    -l k8s-app=machine-config-daemon --no-headers -o name | head -1 | cut -d/ -f2)
+oc exec -n openshift-machine-config-operator $MCD_POD -- \
+    chroot /rootfs sh -c '
+    GPU="0000:63:00.0"   # replace with your GPU PCI address
+    echo "Unbinding $GPU from vfio-pci..."
+    echo "$GPU" > /sys/bus/pci/drivers/vfio-pci/unbind
+    sleep 2
+    echo "Rebinding $GPU to vfio-pci..."
+    echo "$GPU" > /sys/bus/pci/drivers/vfio-pci/bind
+    echo "Done — IOMMU IOAS state reset"
+    '
+```
+
+After the rebind, new kata pods can map the GPU BARs cleanly. This manual step is only needed to clear corruption that occurred before the ClusterPolicy was patched — once the driver daemonset is disabled and vfioManager manages the GPU lifecycle, the IOMMU state is maintained correctly across pod restarts.
 
 ---
 
