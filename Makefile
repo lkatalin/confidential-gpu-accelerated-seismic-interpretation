@@ -137,6 +137,8 @@ help:
 	@echo "    install          - Install the app to the cluster via Helm (requires NAMESPACE;"
 	@echo "                       fetches KBS cert from cluster and builds initdata blob automatically)"
 	@echo "    uninstall        - Uninstall the app from the cluster"
+	@echo "    clean-terminating-pods - Stop kata sandboxes and QEMU processes for pods stuck"
+	@echo "                       in Terminating, then force-delete their pod records (requires NAMESPACE)"
 	@echo ""
 	@echo "  Signing (model owner — run when publishing a custom model or app image):"
 	@echo "    generate-model-owner-keys         - Generate a cosign key pair in model-owner-verification-keys/"
@@ -563,6 +565,43 @@ install:
 uninstall:
 	helm uninstall seismic-app -n $(NAMESPACE) --ignore-not-found
 	@echo "seismic-app uninstalled from $(NAMESPACE)"
+
+.PHONY: clean-terminating-pods
+clean-terminating-pods:
+	@[ -n "$$NAMESPACE" ] || (echo "Error: NAMESPACE is not set"; exit 1)
+	@set -e; \
+	echo "=== Cleaning terminating pods in namespace $(NAMESPACE) ==="; \
+	MCD_POD=$$(oc get pod -n openshift-machine-config-operator \
+	    -l k8s-app=machine-config-daemon \
+	    --no-headers -o name 2>/dev/null | head -1 | cut -d/ -f2); \
+	[ -n "$$MCD_POD" ] || { echo "ERROR: machine-config-daemon pod not found — is the cluster accessible?"; exit 1; }; \
+	echo "Using MCD pod: $$MCD_POD"; \
+	TERMINATING=$$(oc get pods -n $(NAMESPACE) --no-headers 2>/dev/null \
+	    | awk '$$3=="Terminating"{print $$1}'); \
+	if [ -z "$$TERMINATING" ]; then \
+	    echo "No terminating pods in namespace $(NAMESPACE)."; \
+	    exit 0; \
+	fi; \
+	echo "Terminating pods:"; \
+	echo "$$TERMINATING" | sed 's/^/  /'; \
+	oc exec -n openshift-machine-config-operator $$MCD_POD -- \
+	    chroot /rootfs sh -c \
+	    'for SID in $$(crictl pods --namespace $(NAMESPACE) --no-trunc -q 2>/dev/null); do \
+	        echo "Stopping sandbox $$SID"; \
+	        crictl stopp "$$SID" 2>/dev/null || true; \
+	        crictl rmp --force "$$SID" 2>/dev/null || true; \
+	        pkill -TERM -f "$$SID" 2>/dev/null || true; \
+	    done; \
+	    sleep 3; \
+	    for SID in $$(crictl pods --namespace $(NAMESPACE) --no-trunc -q 2>/dev/null); do \
+	        echo "Force-killing residual QEMU for $$SID"; \
+	        pkill -KILL -f "$$SID" 2>/dev/null || true; \
+	    done'; \
+	for POD in $$TERMINATING; do \
+	    oc delete pod "$$POD" -n $(NAMESPACE) --force --grace-period=0 2>/dev/null || true; \
+	    echo "Force-deleted: $$POD"; \
+	done; \
+	echo "=== Done ==="
 
 .PHONY: setup-intel-tee
 setup-intel-tee:

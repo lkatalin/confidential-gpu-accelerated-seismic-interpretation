@@ -46,7 +46,19 @@ CreateContainerRequest {
 }
 
 CreateContainerRequest {
+    input.OCI.Annotations["io.kubernetes.cri.container-name"] == "model-init"
+    startswith(input.OCI.Annotations["io.kubernetes.cri.image-name"], "{model_image_repo}@")
+    input.OCI.Process.Args == ["/bin/cp", "-r", "/model/.", "/models-cache/"]
+}
+
+CreateContainerRequest {
     input.OCI.Annotations["io.kubernetes.cri.container-name"] == "app"
     startswith(input.OCI.Annotations["io.kubernetes.cri.image-name"], "{app_image_repo}:")
+    input.OCI.Process.Args == ["/bin/bash", "-c", "bash /app/decrypt.sh && python /app/app.py"]
+}
+
+CreateContainerRequest {
+    input.OCI.Annotations["io.kubernetes.cri.container-name"] == "app"
+    startswith(input.OCI.Annotations["io.kubernetes.cri.image-name"], "{app_image_repo}@")
     input.OCI.Process.Args == ["/bin/bash", "-c", "bash /app/decrypt.sh && python /app/app.py"]
 }
