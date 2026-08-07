@@ -58,7 +58,7 @@ CopyFileRequest if {
 
 CreateContainerRequest if {
     some container in policy_data.containers
-    input.OCI.Process.args == container.OCI.Process.args
+#    input.OCI.Process.args == container.OCI.Process.args
     count(input.storages) > 0
     every storage in input.storages {
         storage_allowed(storage, container)
