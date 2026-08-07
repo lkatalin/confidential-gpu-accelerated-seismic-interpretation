@@ -14,8 +14,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NAMESPACE=${1:-seismic-interpretation}
 KATA_RUNTIME_CLASS=${2:-kata-cc-nvidia-gpu}
-PROBE_IMAGE="registry.access.redhat.com/ubi9/ubi:latest"
+KBS_URL="https://kbs-service.trustee-operator-system.svc.cluster.local:8080"
+PROBE_IMAGE="registry.access.redhat.com/ubi9/ubi-minimal:latest"
 PROBE_POD="tdx-measure-$$"
+POLICY_FILE="${SCRIPT_DIR}/../policies/policy-dev.rego"
 
 # ── OSC version ───────────────────────────────────────────────────────────────
 
@@ -45,11 +47,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# ── Launch probe pod ──────────────────────────────────────────────────────────
-# CDH inside the kata VM requires valid initdata to start its HTTP server on
-# port 8006.  Without it the AA evidence endpoint will not be reachable.
-
-echo "Launching temporary kata-cc probe pod: $PROBE_POD"
+# ── Build initdata ────────────────────────────────────────────────────────────
+# Builds aa.toml + cdh.toml (no [image] section) + dev policy, gzip+base64
+# encoded — matching the format of seismic-app-dev.yaml.
 
 if ! oc get secret trusteeconfig-https-cert-secret \
        -n trustee-operator-system &>/dev/null; then
@@ -58,12 +58,68 @@ if ! oc get secret trusteeconfig-https-cert-secret \
   exit 1
 fi
 
-INITDATA=$(oc get secret trusteeconfig-https-cert-secret \
+if [ ! -f "$POLICY_FILE" ]; then
+  echo "ERROR: Dev policy not found: $POLICY_FILE" >&2
+  exit 1
+fi
+
+KBS_CERT=$(oc get secret trusteeconfig-https-cert-secret \
   -n trustee-operator-system \
-  -o jsonpath='{.data.certificate}' | base64 -d \
-  | python3 "$SCRIPT_DIR/build-initdata.py" \
-      "https://kbs-service.trustee-operator-system.svc.cluster.local:8080" \
-      "$NAMESPACE")
+  -o jsonpath='{.data.certificate}' | base64 -d)
+
+INITDATA=$(KBS_CERT="$KBS_CERT" KBS_URL="$KBS_URL" \
+  python3 - "$POLICY_FILE" <<'PYTHON'
+import base64, gzip, os, sys
+
+kbs_url  = os.environ['KBS_URL']
+kbs_cert = os.environ['KBS_CERT']
+
+with open(sys.argv[1]) as f:
+    policy_rego = f.read()
+
+aa_toml = f"""\
+[token_configs]
+[token_configs.coco_as]
+url = "{kbs_url}"
+
+[token_configs.kbs]
+url = "{kbs_url}"
+cert = \"\"\"
+{kbs_cert}
+\"\"\""""
+
+cdh_toml = f"""\
+socket = 'unix:///run/confidential-containers/cdh.sock'
+credentials = []
+
+[kbc]
+name = "cc_kbc"
+url = "{kbs_url}"
+kbs_cert = \"\"\"
+{kbs_cert}
+\"\"\""""
+
+toml = f"""\
+algorithm = "sha256"
+version = "0.1.0"
+
+[data]
+"aa.toml" = '''
+{aa_toml}
+'''
+
+"cdh.toml" = '''
+{cdh_toml}
+'''
+
+"policy.rego" = '''
+{policy_rego}
+'''
+"""
+
+print(base64.b64encode(gzip.compress(toml.encode())).decode(), end='')
+PYTHON
+)
 
 if [ -z "$INITDATA" ]; then
   echo "ERROR: Failed to compute initdata blob." >&2
@@ -72,8 +128,11 @@ fi
 
 echo "Initdata computed (${#INITDATA} chars)."
 
+# ── Launch probe pod ──────────────────────────────────────────────────────────
+
+echo "Launching temporary kata-cc probe pod: $PROBE_POD"
+
 PROBE_MANIFEST=$(mktemp /tmp/tdx-probe-XXXXXX.yaml)
-# Write to a temp file — the initdata value is too long for --overrides
 cat > "$PROBE_MANIFEST" <<EOF
 apiVersion: v1
 kind: Pod
@@ -82,6 +141,8 @@ metadata:
   namespace: ${NAMESPACE}
   annotations:
     io.katacontainers.config.hypervisor.cc_init_data: "${INITDATA}"
+    io.katacontainers.config.hypervisor.default_memory: "16384"
+    io.katacontainers.config.hypervisor.kernel_params: "agent.guest_components_rest_api=all"
 spec:
   runtimeClassName: ${KATA_RUNTIME_CLASS}
   restartPolicy: Never
@@ -103,7 +164,6 @@ echo "Querying attestation agent evidence endpoint..."
 
 RUNTIME_DATA=$(printf '%s' "collect-tdx-measurements" | base64 | tr -d '=')
 
-# First check whether CDH is reachable at all on port 8006.
 CDH_STATUS=$(oc exec -n "$NAMESPACE" "$PROBE_POD" -c probe -- \
   curl -s -o /dev/null -w "%{http_code}" \
   "http://127.0.0.1:8006/aa/evidence?runtime_data=$RUNTIME_DATA" \

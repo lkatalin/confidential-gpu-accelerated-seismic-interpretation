@@ -17,8 +17,8 @@ tolerations: []
 # Initial RAM (MiB) for the kata VM. CDH unpacks all container images into
 # the VM's tmpfs before containers start, so this must exceed the total
 # uncompressed size of all images pulled inside the VM.
-# The app image is ~4.6 GB compressed / ~20 GB uncompressed.
-kataMemoryMiB: 24576   # 24 GB
+# The app image is ~8.5 GB compressed. Both images must unpack into the VM's tmpfs.
+kataMemoryMiB: 49152   # 48 GB
 
 resources:
   limits:
