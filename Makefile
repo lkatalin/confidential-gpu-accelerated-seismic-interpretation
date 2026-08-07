@@ -590,42 +590,7 @@ uninstall:
 .PHONY: clean-terminating-pods
 clean-terminating-pods:
 	@[ -n "$$NAMESPACE" ] || (echo "Error: NAMESPACE is not set"; exit 1)
-	@set -e; \
-	echo "=== Cleaning terminating pods in namespace $(NAMESPACE) ==="; \
-	MCD_POD=$$(oc get pod -n openshift-machine-config-operator \
-	    -l k8s-app=machine-config-daemon \
-	    --no-headers -o name 2>/dev/null | head -1 | cut -d/ -f2); \
-	[ -n "$$MCD_POD" ] || { echo "ERROR: machine-config-daemon pod not found — is the cluster accessible?"; exit 1; }; \
-	echo "Using MCD pod: $$MCD_POD"; \
-	TERMINATING=$$(oc get pods -n $(NAMESPACE) --no-headers 2>/dev/null \
-	    | awk '$$3=="Terminating"{print $$1}'); \
-	if [ -z "$$TERMINATING" ]; then \
-	    echo "No terminating pods in namespace $(NAMESPACE)."; \
-	    exit 0; \
-	fi; \
-	echo "Terminating pods:"; \
-	echo "$$TERMINATING" | sed 's/^/  /'; \
-	for POD in $$TERMINATING; do \
-	    echo "--- Stopping kata sandbox for pod: $$POD ---"; \
-	    SID=$$(oc exec -n openshift-machine-config-operator $$MCD_POD -- \
-	        chroot /rootfs crictl pods \
-	        --name "$$POD" --namespace $(NAMESPACE) \
-	        --no-trunc -q 2>/dev/null | head -1); \
-	    if [ -n "$$SID" ]; then \
-	        echo "  Sending QMP powerdown to sandbox $$SID (allows clean VFIO release)..."; \
-	        oc exec -n openshift-machine-config-operator $$MCD_POD -- \
-	            chroot /rootfs crictl stopp "$$SID" 2>/dev/null || true; \
-	        sleep 10; \
-	        oc exec -n openshift-machine-config-operator $$MCD_POD -- \
-	            chroot /rootfs crictl rmp --force "$$SID" 2>/dev/null || true; \
-	        echo "  Sandbox $$SID removed."; \
-	    else \
-	        echo "  No sandbox found for $$POD — CRI-O already cleaned up"; \
-	    fi; \
-	    oc delete pod "$$POD" -n $(NAMESPACE) --grace-period=30 2>/dev/null || true; \
-	    echo "  Pod record deleted."; \
-	done; \
-	echo "=== Done ==="
+	bash scripts/cleanup-terminating-pods.sh "$(NAMESPACE)"
 
 .PHONY: setup-intel-tee
 setup-intel-tee:
