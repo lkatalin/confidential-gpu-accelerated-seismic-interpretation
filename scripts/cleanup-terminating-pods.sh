@@ -36,6 +36,7 @@ PODS=$(oc get pods $NS_ARG -o json 2>/dev/null | jq -r '
 FAILED_STOPS=()
 declare -A NODE_SANDBOXES   # node -> space-separated "ns/pod/sandbox_id" triples
 declare -A SKIP_DELETE       # "ns/pod" -> 1 for pods whose sandbox stop failed
+HAS_SANDBOXES=0
 
 if [ -z "$PODS" ]; then
     echo "No Terminating pods found."
@@ -65,6 +66,7 @@ while IFS=$'\t' read -r ns pod node runtime; do
     if [ -n "$SID" ]; then
         echo "  Sandbox ID: $SID"
         NODE_SANDBOXES["$node"]="${NODE_SANDBOXES[$node]:-} $ns/$pod/$SID"
+        HAS_SANDBOXES=1
     else
         echo "  WARNING: could not get sandbox ID for $ns/$pod (may have already exited)"
     fi
@@ -74,7 +76,7 @@ done <<< "$PODS"
 # crictl stopp goes through the kata-runtime shutdown sequence so the VM
 # exits cleanly, VFIO GPU bindings are released, and the device plugin
 # accounting is updated correctly.
-if [ ${#NODE_SANDBOXES[@]} -gt 0 ]; then
+if [ "$HAS_SANDBOXES" -eq 1 ]; then
     echo ""
     echo "=== Stopping kata sandboxes via crictl ==="
 
