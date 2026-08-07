@@ -91,9 +91,15 @@ if [ ${#NODE_SANDBOXES[@]} -gt 0 ]; then
                 crictl stopp "$SID" 2>/dev/null; then
                 echo "  ✓ sandbox stopped cleanly via kata-runtime"
             else
-                echo "  ✗ crictl stopp failed for sandbox $SID — pod record will NOT be deleted"
-                FAILED_STOPS+=("$node / $ns/$pod / $SID")
-                SKIP_DELETE["$ns/$pod"]=1
+                echo "  ✗ crictl stopp failed — retrying with crictl rmp --force..."
+                if oc debug node/"$node" -- chroot /host \
+                    crictl rmp --force "$SID" 2>/dev/null; then
+                    echo "  ✓ sandbox forcefully removed via CRI-O"
+                else
+                    echo "  ✗ crictl rmp --force also failed — pod record will NOT be deleted"
+                    FAILED_STOPS+=("$node / $ns/$pod / $SID")
+                    SKIP_DELETE["$ns/$pod"]=1
+                fi
             fi
         done
     done
