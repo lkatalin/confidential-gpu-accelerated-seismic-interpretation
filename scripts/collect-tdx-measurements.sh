@@ -243,8 +243,8 @@ except Exception:
 # Minimum length: header(48) + TCB_SVN(16) + MR_SEAM(48) + MR_SIGNER_SEAM(48)
 #   + SEAM_ATTRS(8) + TD_ATTRS(8) + XFAM(8) + MRTD(48)
 #   + MR_CONFIG_ID(48) + MR_OWNER(48) + MR_OWNER_CONFIG(48)
-#   + RTMR[0](48) + RTMR[1](48) + RTMR[2](48)
-MIN_LEN = 48 + 16 + 48 + 48 + 8 + 8 + 8 + 48 + 48 + 48 + 48 + 48 + 48 + 48
+#   + RTMR[0](48) + RTMR[1](48) + RTMR[2](48) + RTMR[3](48)
+MIN_LEN = 48 + 16 + 48 + 48 + 8 + 8 + 8 + 48 + 48 + 48 + 48 + 48 + 48 + 48 + 48
 if len(quote) < MIN_LEN:
     print(f"ERROR: Quote too short ({len(quote)} bytes, need >= {MIN_LEN})", file=sys.stderr)
     sys.exit(1)
@@ -252,44 +252,64 @@ if len(quote) < MIN_LEN:
 # TDX DCAP v4 quote layout:
 #   Header (48 bytes) followed by TD10 Report Body:
 #     TEE_TCB_SVN       16 bytes
-#     MR_SEAM           48 bytes
+#     MR_SEAM           48 bytes   ← mr_seam
 #     MR_SIGNER_SEAM    48 bytes
 #     SEAM_ATTRIBUTES    8 bytes
-#     TD_ATTRIBUTES      8 bytes
+#     TD_ATTRIBUTES      8 bytes   ← td_attributes
 #     XFAM               8 bytes   ← xfam
 #     MRTD              48 bytes   ← mr_td
 #     MR_CONFIG_ID      48 bytes
 #     MR_OWNER          48 bytes
 #     MR_OWNER_CONFIG   48 bytes
-#     RTMR[0]           48 bytes
+#     RTMR[0]           48 bytes   ← rtmr_0
 #     RTMR[1]           48 bytes   ← rtmr_1
 #     RTMR[2]           48 bytes   ← rtmr_2
-#     RTMR[3]           48 bytes
+#     RTMR[3]           48 bytes   ← rtmr_3
 #     REPORT_DATA       64 bytes
-o = 48 + 16 + 48 + 48 + 8 + 8      # skip to XFAM
-xfam  = quote[o:o+8];   o += 8
-mr_td = quote[o:o+48];  o += 48
+o = 48 + 16                         # skip header and TEE_TCB_SVN
+mr_seam   = quote[o:o+48]; o += 48  # MR_SEAM
+o += 48                             # skip MR_SIGNER_SEAM
+o += 8                              # skip SEAM_ATTRIBUTES
+td_attrs  = quote[o:o+8];  o += 8   # TD_ATTRIBUTES
+xfam      = quote[o:o+8];  o += 8   # XFAM
+mr_td     = quote[o:o+48]; o += 48  # MRTD
 o += 48 + 48 + 48                   # skip MR_CONFIG_ID, MR_OWNER, MR_OWNER_CONFIG
-o += 48                             # skip RTMR[0]
-rtmr1 = quote[o:o+48];  o += 48
-rtmr2 = quote[o:o+48]
+rtmr0     = quote[o:o+48]; o += 48  # RTMR[0]
+rtmr1     = quote[o:o+48]; o += 48  # RTMR[1]
+rtmr2     = quote[o:o+48]; o += 48  # RTMR[2]
+rtmr3     = quote[o:o+48]           # RTMR[3]
+
+debug_bit = td_attrs[0] & 0x01
+td_debug_note = "← DEBUG MODE ON — not truly confidential!" if debug_bit else "← debug bit clear (production OK)"
 
 print("TDX measurements:")
-print(f"  mr_td:  {mr_td.hex()}")
-print(f"  xfam:   {xfam.hex()}")
-print(f"  rtmr_1: {rtmr1.hex()}")
-print(f"  rtmr_2: {rtmr2.hex()}")
+print(f"  mr_seam:       {mr_seam.hex()}")
+print(f"  td_attributes: {td_attrs.hex()}  {td_debug_note}")
+print(f"  mr_td:         {mr_td.hex()}")
+print(f"  xfam:          {xfam.hex()}")
+print(f"  rtmr_0:        {rtmr0.hex()}")
+print(f"  rtmr_1:        {rtmr1.hex()}")
+print(f"  rtmr_2:        {rtmr2.hex()}")
+print(f"  rtmr_3:        {rtmr3.hex()}")
 print()
 print(f"# ── Makefile variables (OSC {osc_version}) ──────────────────────────────────────")
 print(f"# Paste into Makefile; re-run this script and update after an OSC upgrade.")
-print(f"TDX_MR_TD  ?= {mr_td.hex()}")
-print(f"TDX_XFAM   ?= {xfam.hex()}")
-print(f"TDX_RTMR_1 ?= {rtmr1.hex()}")
-print(f"TDX_RTMR_2 ?= {rtmr2.hex()}")
+print(f"TDX_MR_SEAM      ?= {mr_seam.hex()}")
+print(f"TDX_TD_ATTRIBUTES ?= {td_attrs.hex()}")
+print(f"TDX_MR_TD        ?= {mr_td.hex()}")
+print(f"TDX_XFAM         ?= {xfam.hex()}")
+print(f"TDX_RTMR_0       ?= {rtmr0.hex()}")
+print(f"TDX_RTMR_1       ?= {rtmr1.hex()}")
+print(f"TDX_RTMR_2       ?= {rtmr2.hex()}")
+print(f"TDX_RTMR_3       ?= {rtmr3.hex()}")
 print()
 print(f"# ── Environment exports for 'make setup-attestation' ────────────────────")
+print(f"export TDX_MR_SEAM={mr_seam.hex()}")
+print(f"export TDX_TD_ATTRIBUTES={td_attrs.hex()}")
 print(f"export TDX_MR_TD={mr_td.hex()}")
 print(f"export TDX_XFAM={xfam.hex()}")
+print(f"export TDX_RTMR_0={rtmr0.hex()}")
 print(f"export TDX_RTMR_1={rtmr1.hex()}")
 print(f"export TDX_RTMR_2={rtmr2.hex()}")
+print(f"export TDX_RTMR_3={rtmr3.hex()}")
 PYTHON

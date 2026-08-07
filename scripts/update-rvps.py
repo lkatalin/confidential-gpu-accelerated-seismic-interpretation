@@ -69,10 +69,14 @@ if current_json.strip() and current_json.strip() != '{}':
     except Exception:
         entries = {}
 
-upsert(entries, 'tdx_pcr08', pcr8)
-upsert(entries, 'mr_td',  os.environ.get('TDX_MR_TD', ''))
-upsert(entries, 'rtmr_1', os.environ.get('TDX_RTMR_1', ''))
-upsert(entries, 'rtmr_2', os.environ.get('TDX_RTMR_2', ''))
-upsert(entries, 'xfam',   os.environ.get('TDX_XFAM', ''))
+upsert(entries, 'tdx_pcr08',    pcr8)
+upsert(entries, 'mr_td',        os.environ.get('TDX_MR_TD', ''))
+upsert(entries, 'xfam',         os.environ.get('TDX_XFAM', ''))
+upsert(entries, 'rtmr_0',       os.environ.get('TDX_RTMR_0', ''))
+upsert(entries, 'rtmr_1',       os.environ.get('TDX_RTMR_1', ''))
+upsert(entries, 'rtmr_2',       os.environ.get('TDX_RTMR_2', ''))
+upsert(entries, 'rtmr_3',       os.environ.get('TDX_RTMR_3', ''))
+upsert(entries, 'td_attributes', os.environ.get('TDX_TD_ATTRIBUTES', ''))
+upsert(entries, 'mr_seam',      os.environ.get('TDX_MR_SEAM', ''))
 
 print(json.dumps(entries))
