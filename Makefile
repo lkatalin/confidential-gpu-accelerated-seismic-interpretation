@@ -142,6 +142,8 @@ help:
 	@echo "    show-rvps                - Print RVPS reference values: what would be registered by"
 	@echo "                               setup-attestation vs what is currently in the ConfigMap"
 	@echo "                               (requires NAMESPACE; export TDX_MR_TD/XFAM/RTMR_1/RTMR_2)"
+	@echo "    clear-rvps               - Remove all registered RVPS reference values and restart Trustee"
+	@echo "                               WARNING: attestation will fail for all pods until re-registered"
 	@echo "    trustee-logs             - Show the last 100 log lines from the Trustee deployment"
 	@echo "    debug-attestation        - Start a temporary kata pod, fetch the live EAR token from CDH,"
 	@echo "                               and decode trust claims (executables/hardware/configuration per submod)"
@@ -1223,6 +1225,19 @@ show-initdata:
 	        --policy-mode $(POLICY_MODE) \
 	        --app-image $(APP_IMG) \
 	        --model-image $(MODEL_IMG)
+
+.PHONY: clear-rvps
+clear-rvps:
+	@echo "WARNING: This will remove all RVPS reference values. Attestation will fail for all"
+	@echo "         pods until 'make setup-attestation' is run again. Press Ctrl-C to abort."
+	@sleep 5
+	@oc patch configmap trusteeconfig-rvps-reference-values \
+	    -n trustee-operator-system \
+	    --type merge \
+	    -p '{"data":{"reference_value":"{}"}}'
+	@oc rollout restart deployment/trustee-deployment -n trustee-operator-system
+	@oc rollout status deployment/trustee-deployment -n trustee-operator-system --timeout=2m
+	@echo "RVPS reference values cleared."
 
 .PHONY: show-rvps
 show-rvps:
