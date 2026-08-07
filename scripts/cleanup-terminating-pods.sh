@@ -88,11 +88,11 @@ if [ ${#NODE_SANDBOXES[@]} -gt 0 ]; then
             echo ""
             echo "  Stopping sandbox $SID ($ns/$pod) on $node..."
             if oc debug node/"$node" -- chroot /host \
-                crictl stopp "$SID" 2>/dev/null; then
+                crictl stopp --timeout 30 "$SID" 2>/dev/null; then
                 echo "  ✓ sandbox stopped cleanly via kata-runtime"
             else
-                echo "  ✗ crictl stopp timed out — waiting 15s for background shutdown..."
-                sleep 15
+                echo "  ✗ crictl stopp timed out — waiting 30s for background shutdown..."
+                sleep 30
                 # The ACPI powerdown may still be in flight; check if sandbox is actually gone
                 SANDBOX_STATE=$(oc debug node/"$node" -- chroot /host \
                     crictl inspectp "$SID" 2>/dev/null \
@@ -104,12 +104,30 @@ if [ ${#NODE_SANDBOXES[@]} -gt 0 ]; then
                     echo "  ✗ sandbox still running (state: ${SANDBOX_STATE}) — retrying with crictl rmp --force..."
                     if oc debug node/"$node" -- chroot /host \
                         crictl rmp --force "$SID" 2>/dev/null; then
-                        echo "  ✓ sandbox forcefully removed via CRI-O"
+                        echo "  ✓ sandbox removed via CRI-O force"
                     else
-                        echo "  ✗ crictl rmp --force also failed — pod record will NOT be deleted"
-                        FAILED_STOPS+=("$node / $ns/$pod / $SID")
-                        SKIP_DELETE["$ns/$pod"]=1
+                        echo "  ✗ crictl rmp --force also failed"
                     fi
+                    # Kill QEMU directly as final backup to release GPU iommufd bindings
+                    echo "  Killing QEMU process for sandbox $SID..."
+                    KILL_RESULT=$(oc debug node/"$node" -- chroot /host sh -c \
+                        "pid=\$(pgrep -f 'sandbox-${SID}' | head -1); \
+                         if [ -n \"\$pid\" ]; then \
+                             kill -9 \"\$pid\" 2>/dev/null && echo \"KILLED:\$pid\" || echo KILL_FAILED; \
+                         else echo ALREADY_GONE; fi" 2>/dev/null || echo KILL_FAILED)
+                    case "$KILL_RESULT" in
+                        KILLED:*)
+                            echo "  ✓ QEMU PID ${KILL_RESULT#KILLED:} killed — GPU iommufd bindings released"
+                            ;;
+                        ALREADY_GONE)
+                            echo "  ✓ QEMU process already gone — GPU already released"
+                            ;;
+                        *)
+                            echo "  ✗ Could not kill QEMU process — pod record will NOT be deleted"
+                            FAILED_STOPS+=("$node / $ns/$pod / $SID")
+                            SKIP_DELETE["$ns/$pod"]=1
+                            ;;
+                    esac
                 fi
             fi
         done
@@ -136,13 +154,14 @@ if [ ${#FAILED_STOPS[@]} -eq 0 ]; then
 else
     echo "=== WARNING: the following sandboxes could not be stopped cleanly ==="
     echo ""
-    echo "  The pod records have been removed from Kubernetes but the kata VM"
-    echo "  may still be running on the node, holding the GPU."
+    echo "  Pod records have been PRESERVED in Kubernetes. The kata VM may still"
+    echo "  be running on the node, holding the GPU."
     echo ""
     for entry in "${FAILED_STOPS[@]}"; do
         node=$(echo "$entry" | cut -d/ -f1 | xargs)
-        SID=$(echo "$entry"  | cut -d/ -f3 | xargs)
-        echo "  Node: $node   Sandbox: $SID"
+        pod=$(echo "$entry"  | cut -d/ -f2,3 | xargs)
+        SID=$(echo "$entry"  | cut -d/ -f4 | xargs)
+        echo "  Node: $node   Pod: $pod   Sandbox: $SID"
         echo "    Check:  oc debug node/$node -- chroot /host crictl pods"
         echo "    Retry:  oc debug node/$node -- chroot /host crictl stopp $SID"
     done
