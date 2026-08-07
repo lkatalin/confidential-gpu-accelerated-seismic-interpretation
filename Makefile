@@ -131,6 +131,10 @@ help:
 	@echo "    show-initdata            - Print the decoded initdata that would be embedded in the pod:"
 	@echo "                               aa.toml, cdh.toml, policy.rego, SHA-256, and PCR8 hash"
 	@echo "                               (requires NAMESPACE; uses POLICY_MODE, APP_IMG, MODEL_IMG)"
+	@echo "    show-rvps                - Print RVPS reference values: what would be registered by"
+	@echo "                               setup-attestation vs what is currently in the ConfigMap"
+	@echo "                               (requires NAMESPACE; export TDX_MR_TD/XFAM/RTMR_1/RTMR_2)"
+	@echo "    trustee-logs             - Show the last 100 log lines from the Trustee deployment"
 	@echo "    debug-attestation        - Start a temporary kata pod, fetch the live EAR token from CDH,"
 	@echo "                               and decode trust claims (executables/hardware/configuration per submod)"
 	@echo "                               highlighting any non-affirming values that cause PolicyDeny"
@@ -1194,6 +1198,31 @@ show-initdata:
 	        --policy-mode $(POLICY_MODE) \
 	        --app-image $(APP_IMG) \
 	        --model-image $(MODEL_IMG)
+
+.PHONY: show-rvps
+show-rvps:
+	@[ -n "$$NAMESPACE" ] || (echo "Error: NAMESPACE is not set"; exit 1)
+	@set -e; \
+	oc get secret trusteeconfig-https-cert-secret -n trustee-operator-system >/dev/null 2>&1 || { \
+	    echo "Error: trusteeconfig-https-cert-secret not found — run make setup-trustee-in-cluster first"; exit 1; \
+	}; \
+	KBS_SVC_URL="https://kbs-service.trustee-operator-system.svc.cluster.local:8080"; \
+	PCR8=$$(oc get secret trusteeconfig-https-cert-secret -n trustee-operator-system \
+	    -o jsonpath='{.data.certificate}' | base64 -d \
+	    | python3 scripts/build-initdata.py "$$KBS_SVC_URL" "$(NAMESPACE)" --pcr8-only \
+	        --policy-mode $(POLICY_MODE) \
+	        --app-image $(APP_IMG) \
+	        --model-image $(MODEL_IMG)); \
+	CURRENT=$$(oc get configmap trusteeconfig-rvps-reference-values \
+	    -n trustee-operator-system \
+	    -o jsonpath='{.data.reference_value}' 2>/dev/null || echo '{}'); \
+	TDX_MR_TD="$(TDX_MR_TD)" TDX_XFAM="$(TDX_XFAM)" \
+	TDX_RTMR_1="$(TDX_RTMR_1)" TDX_RTMR_2="$(TDX_RTMR_2)" \
+	python3 scripts/show-rvps.py "$$PCR8" "$$CURRENT"
+
+.PHONY: trustee-logs
+trustee-logs:
+	@oc logs -n trustee-operator-system -l app=trustee --tail=100 --prefix
 
 .PHONY: debug-attestation
 debug-attestation:
