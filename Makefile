@@ -126,6 +126,10 @@ help:
 	@echo "    verify-dcap              - Check DCAP operator CSVs, TdxQuoteGenerationService CR, and QGS pod status"
 	@echo "    setup-trustee-in-cluster - Install Trustee KBS operator and configure attestation policy"
 	@echo "                               Requires setup-dcap to have completed first (Intel TDX only)"
+	@echo "    collect-tdx-measurements - Launch a temporary kata probe pod and collect TDX hardware"
+	@echo "                               measurements (mr_td, xfam, rtmr_0-3, td_attributes, mr_seam)"
+	@echo "                               Paste the printed Makefile variables here; re-run after OSC upgrades"
+	@echo "                               (requires NAMESPACE; uses KATA_RUNTIME_CLASS)"
 	@echo "    setup-attestation        - Register model key, cosign key, and image policy with KBS;"
 	@echo "                               compute and register tdx_pcr08 RVPS reference value"
 	@echo "                               (requires NAMESPACE, MODEL_ENCRYPTION_KEY, model-owner-verification-keys/cosign.pub)"
@@ -1135,6 +1139,11 @@ setup-trustee-in-cluster:
 	echo "KBS route: $$(oc get route kbs-route \
 	    -n trustee-operator-system -o jsonpath='{.spec.host}')"; \
 	echo "=== setup-trustee-in-cluster complete ==="
+
+.PHONY: collect-tdx-measurements
+collect-tdx-measurements:
+	@[ -n "$$NAMESPACE" ] || (echo "Error: NAMESPACE is not set"; exit 1)
+	bash scripts/collect-tdx-measurements.sh "$(NAMESPACE)" "$(KATA_RUNTIME_CLASS)"
 
 .PHONY: setup-attestation
 setup-attestation:
