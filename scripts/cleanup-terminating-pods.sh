@@ -91,14 +91,25 @@ if [ ${#NODE_SANDBOXES[@]} -gt 0 ]; then
                 crictl stopp "$SID" 2>/dev/null; then
                 echo "  ✓ sandbox stopped cleanly via kata-runtime"
             else
-                echo "  ✗ crictl stopp failed — retrying with crictl rmp --force..."
-                if oc debug node/"$node" -- chroot /host \
-                    crictl rmp --force "$SID" 2>/dev/null; then
-                    echo "  ✓ sandbox forcefully removed via CRI-O"
+                echo "  ✗ crictl stopp timed out — waiting 15s for background shutdown..."
+                sleep 15
+                # The ACPI powerdown may still be in flight; check if sandbox is actually gone
+                SANDBOX_STATE=$(oc debug node/"$node" -- chroot /host \
+                    crictl inspectp "$SID" 2>/dev/null \
+                    | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('status',{}).get('state',''))" \
+                    2>/dev/null || echo "GONE")
+                if [ "$SANDBOX_STATE" = "SANDBOX_NOTREADY" ] || [ "$SANDBOX_STATE" = "GONE" ]; then
+                    echo "  ✓ sandbox stopped (state: ${SANDBOX_STATE}) — background shutdown completed"
                 else
-                    echo "  ✗ crictl rmp --force also failed — pod record will NOT be deleted"
-                    FAILED_STOPS+=("$node / $ns/$pod / $SID")
-                    SKIP_DELETE["$ns/$pod"]=1
+                    echo "  ✗ sandbox still running (state: ${SANDBOX_STATE}) — retrying with crictl rmp --force..."
+                    if oc debug node/"$node" -- chroot /host \
+                        crictl rmp --force "$SID" 2>/dev/null; then
+                        echo "  ✓ sandbox forcefully removed via CRI-O"
+                    else
+                        echo "  ✗ crictl rmp --force also failed — pod record will NOT be deleted"
+                        FAILED_STOPS+=("$node / $ns/$pod / $SID")
+                        SKIP_DELETE["$ns/$pod"]=1
+                    fi
                 fi
             fi
         done
