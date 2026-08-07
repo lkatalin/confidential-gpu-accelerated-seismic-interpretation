@@ -39,26 +39,42 @@ default WaitProcessRequest := true
 default WriteStreamRequest := false
 default ExecProcessRequest := false
 
-CreateContainerRequest {
-    input.OCI.Annotations["io.kubernetes.cri.container-name"] == "model-init"
-    startswith(input.OCI.Annotations["io.kubernetes.cri.image-name"], "{model_image_repo}:")
+# Rule 1: Allow exact system networking files
+CopyFileRequest if {
+    allowed_system_paths := {
+        "/etc/resolv.conf",
+        "/etc/hosts",
+        "/etc/hostname"
+    }
+    allowed_system_paths[input.path]
+}
+
+# Rule 2: Allow Kubernetes mounted volumes (ConfigMaps, Secrets, Tokens)
+# Kata Containers stages host-side volume mounts inside this shared guest directory:
+CopyFileRequest if {
+    startswith(input.path, "/run/kata-containers/shared/containers/")
+}
+
+CreateContainerRequest if {
+    input.OCI.Annotations["io.kubernetes.container.name"] == "model-init"
+    startswith(input.OCI.Annotations["io.kubernetes.cri-o.ImageName"], "{model_image_repo}:")
     input.OCI.Process.Args == ["/bin/cp", "-r", "/model/.", "/models-cache/"]
 }
 
-CreateContainerRequest {
-    input.OCI.Annotations["io.kubernetes.cri.container-name"] == "model-init"
-    startswith(input.OCI.Annotations["io.kubernetes.cri.image-name"], "{model_image_repo}@")
+CreateContainerRequest if {
+    input.OCI.Annotations["io.kubernetes.container.name"] == "model-init"
+    startswith(input.OCI.Annotations["io.kubernetes.cri-o.Image"], "{model_image_repo}@")
     input.OCI.Process.Args == ["/bin/cp", "-r", "/model/.", "/models-cache/"]
 }
 
-CreateContainerRequest {
-    input.OCI.Annotations["io.kubernetes.cri.container-name"] == "app"
-    startswith(input.OCI.Annotations["io.kubernetes.cri.image-name"], "{app_image_repo}:")
+CreateContainerRequest if {
+    input.OCI.Annotations["io.kubernetes.container.name"] == "app"
+    startswith(input.OCI.Annotations["io.kubernetes.cri-o.ImageName"], "{app_image_repo}:")
     input.OCI.Process.Args == ["/bin/bash", "-c", "bash /app/decrypt.sh && python /app/app.py"]
 }
 
-CreateContainerRequest {
-    input.OCI.Annotations["io.kubernetes.cri.container-name"] == "app"
-    startswith(input.OCI.Annotations["io.kubernetes.cri.image-name"], "{app_image_repo}@")
+CreateContainerRequest if {
+    input.OCI.Annotations["io.kubernetes.container.name"] == "app"
+    startswith(input.OCI.Annotations["io.kubernetes.cri-o.Image"], "{app_image_repo}@")
     input.OCI.Process.Args == ["/bin/bash", "-c", "bash /app/decrypt.sh && python /app/app.py"]
 }
