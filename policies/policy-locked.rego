@@ -70,6 +70,13 @@ storage_allowed(storage, _) if {
     storage.source == "tmpfs"
 }
 
+# temporary figuring out why rule above did not work
+# instead
+storage_allowed(storage, _) if {
+    not startswith(storage.source, "quay.io/")
+}
+
+
 storage_allowed(storage, container) if {
     storage.driver == "image_guest_pull"
     some allowed_prefix in container.storages
