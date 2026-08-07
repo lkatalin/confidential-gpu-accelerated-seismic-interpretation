@@ -19,6 +19,7 @@ spec:
         io.katacontainers.config.hypervisor.default_memory: "{{ .Values.kataMemoryMiB }}"
         io.katacontainers.config.hypervisor.kernel_params: "agent.guest_components_rest_api=all"
     spec:
+      automountServiceAccountToken: false
       runtimeClassName: {{ .Values.runtimeClassName }}
       terminationGracePeriodSeconds: 120
       tolerations:
