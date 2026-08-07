@@ -57,24 +57,28 @@ CopyFileRequest if {
 
 CreateContainerRequest if {
     input.OCI.Annotations["io.kubernetes.container.name"] == "model-init"
-    startswith(input.OCI.Annotations["io.kubernetes.cri-o.ImageName"], "{model_image_repo}:")
     input.OCI.Process.Args == ["/bin/cp", "-r", "/model/.", "/models-cache/"]
+    some storage in input.storages
+    startswith(storage.source, "{model_image_repo}:")
 }
 
 CreateContainerRequest if {
     input.OCI.Annotations["io.kubernetes.container.name"] == "model-init"
-    startswith(input.OCI.Annotations["io.kubernetes.cri-o.Image"], "{model_image_repo}@")
     input.OCI.Process.Args == ["/bin/cp", "-r", "/model/.", "/models-cache/"]
+    some storage in input.storages
+    startswith(storage.source, "{model_image_repo}@")
 }
 
 CreateContainerRequest if {
     input.OCI.Annotations["io.kubernetes.container.name"] == "app"
-    startswith(input.OCI.Annotations["io.kubernetes.cri-o.ImageName"], "{app_image_repo}:")
     input.OCI.Process.Args == ["/bin/bash", "-c", "bash /app/decrypt.sh && python /app/app.py"]
+    some storage in input.storages
+    startswith(storage.source, "{app_image_repo}:")
 }
 
 CreateContainerRequest if {
     input.OCI.Annotations["io.kubernetes.container.name"] == "app"
-    startswith(input.OCI.Annotations["io.kubernetes.cri-o.Image"], "{app_image_repo}@")
     input.OCI.Process.Args == ["/bin/bash", "-c", "bash /app/decrypt.sh && python /app/app.py"]
+    some storage in input.storages
+    startswith(storage.source, "{app_image_repo}@")
 }
