@@ -1,6 +1,7 @@
 package agent_policy
 import future.keywords.in
 import future.keywords.if
+import future.keywords.every
 default AddARPNeighborsRequest := true
 default AddSwapRequest := true
 default CloseStdinRequest := true
@@ -56,29 +57,37 @@ CopyFileRequest if {
 }
 
 CreateContainerRequest if {
-    input.OCI.Annotations["io.kubernetes.container.name"] == "model-init"
-    input.OCI.Process.Args == ["/bin/cp", "-r", "/model/.", "/models-cache/"]
-    some storage in input.storages
-    startswith(storage.source, "{model_image_repo}:")
+    some container in policy_data.containers
+    input.OCI.Process.Args == container.OCI.Process.Args
+    every storage in input.storages {
+        some allowed_prefix in container.storages
+        startswith(storage.source, allowed_prefix.source)
+    }
 }
 
-CreateContainerRequest if {
-    input.OCI.Annotations["io.kubernetes.container.name"] == "model-init"
-    input.OCI.Process.Args == ["/bin/cp", "-r", "/model/.", "/models-cache/"]
-    some storage in input.storages
-    startswith(storage.source, "{model_image_repo}@")
-}
-
-CreateContainerRequest if {
-    input.OCI.Annotations["io.kubernetes.container.name"] == "app"
-    input.OCI.Process.Args == ["/bin/bash", "-c", "bash /app/decrypt.sh && python /app/app.py"]
-    some storage in input.storages
-    startswith(storage.source, "{app_image_repo}:")
-}
-
-CreateContainerRequest if {
-    input.OCI.Annotations["io.kubernetes.container.name"] == "app"
-    input.OCI.Process.Args == ["/bin/bash", "-c", "bash /app/decrypt.sh && python /app/app.py"]
-    some storage in input.storages
-    startswith(storage.source, "{app_image_repo}@")
+policy_data := {
+    "containers": [
+        {
+            "OCI": {
+                "Process": {
+                    "Args": ["/bin/cp", "-r", "/model/.", "/models-cache/"]
+                }
+            },
+            "storages": [
+                {"source": "{model_image_repo}:"},
+                {"source": "{model_image_repo}@"}
+            ]
+        },
+        {
+            "OCI": {
+                "Process": {
+                    "Args": ["/bin/bash", "-c", "bash /app/decrypt.sh && python /app/app.py"]
+                }
+            },
+            "storages": [
+                {"source": "{app_image_repo}:"},
+                {"source": "{app_image_repo}@"}
+            ]
+        }
+    ]
 }
