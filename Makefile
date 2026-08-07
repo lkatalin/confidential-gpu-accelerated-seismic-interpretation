@@ -1249,7 +1249,7 @@ show-rvps:
 
 .PHONY: trustee-logs
 trustee-logs:
-	@oc logs -n trustee-operator-system -l app=trustee --tail=100 --prefix
+	@oc logs -n trustee-operator-system deployment/trustee-deployment --tail=100
 
 .PHONY: debug-attestation
 debug-attestation:
