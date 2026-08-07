@@ -33,10 +33,11 @@ PODS=$(oc get pods $NS_ARG -o json 2>/dev/null | jq -r '
     ] | @tsv
 ')
 
+FAILED_STOPS=()
+
 if [ -z "$PODS" ]; then
     echo "No Terminating pods found."
-    exit 0
-fi
+else
 
 echo ""
 printf "%-30s %-45s %-35s %-20s\n" "NAMESPACE" "POD" "NODE" "RUNTIME"
@@ -73,8 +74,6 @@ done <<< "$PODS"
 # crictl stopp goes through the kata-runtime shutdown sequence so the VM
 # exits cleanly, VFIO GPU bindings are released, and the device plugin
 # accounting is updated correctly.
-FAILED_STOPS=()
-
 if [ ${#NODE_SANDBOXES[@]} -gt 0 ]; then
     echo ""
     echo "=== Stopping kata sandboxes via crictl ==="
@@ -147,27 +146,35 @@ while IFS=$'\t' read -r ns pod node runtime; do
     fi
 done <<< "$PODS"
 
-# --- GPU status check ---
+fi  # end of terminating-pods block
+
+# --- GPU status check (always runs) ---
 echo ""
 echo "=== GPU status (processes holding /dev/iommu) ==="
-NODES_CHECKED=()
-while IFS=$'\t' read -r ns pod node runtime; do
-    [[ "$runtime" != *kata* ]] && continue
-    [ -z "$node" ] && continue
-    [[ " ${NODES_CHECKED[*]} " == *" $node "* ]] && continue
-    NODES_CHECKED+=("$node")
-    echo ""
-    echo "  Node: $node"
-    GPU_HOLDERS=$(oc debug node/"$node" -- chroot /host lsof /dev/iommu 2>/dev/null | grep -v COMMAND || true)
-    if [ -z "$GPU_HOLDERS" ]; then
-        echo "  ✓ /dev/iommu — no processes holding GPUs"
-    else
-        echo "  ✗ /dev/iommu — GPU still held by:"
-        echo "$GPU_HOLDERS" | while read -r line; do
-            echo "    $line"
-        done
-    fi
-done <<< "$PODS"
+
+GPU_NODES=$(oc get nodes -o json 2>/dev/null | jq -r '
+    .items[] |
+    select(.status.capacity["nvidia.com/pgpu"] != null) |
+    .metadata.name' 2>/dev/null || true)
+
+if [ -z "$GPU_NODES" ]; then
+    echo "  No nodes with nvidia.com/pgpu capacity found."
+else
+    while IFS= read -r node; do
+        echo ""
+        echo "  Node: $node"
+        GPU_HOLDERS=$(oc debug node/"$node" -- chroot /host lsof /dev/iommu 2>/dev/null \
+            | grep -v COMMAND || true)
+        if [ -z "$GPU_HOLDERS" ]; then
+            echo "  ✓ /dev/iommu — no QEMU processes holding GPUs"
+        else
+            echo "  ✗ /dev/iommu — GPU still held by:"
+            echo "$GPU_HOLDERS" | while read -r line; do
+                echo "    $line"
+            done
+        fi
+    done <<< "$GPU_NODES"
+fi
 
 # --- Report any sandboxes that could not be stopped ---
 echo ""
