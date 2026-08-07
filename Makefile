@@ -128,6 +128,9 @@ help:
 	@echo "    validate-trustee-certificate - Verify the cert in trusteeconfig-https-cert-secret matches what"
 	@echo "                               KBS is currently serving; fails if cert-manager has rotated the cert"
 	@echo "                               since the last 'make install' (which would break TLS in the kata VM)"
+	@echo "    show-initdata            - Print the decoded initdata that would be embedded in the pod:"
+	@echo "                               aa.toml, cdh.toml, policy.rego, SHA-256, and PCR8 hash"
+	@echo "                               (requires NAMESPACE; uses POLICY_MODE, APP_IMG, MODEL_IMG)"
 	@echo "    debug-attestation        - Start a temporary kata pod, fetch the live EAR token from CDH,"
 	@echo "                               and decode trust claims (executables/hardware/configuration per submod)"
 	@echo "                               highlighting any non-affirming values that cause PolicyDeny"
@@ -1176,6 +1179,21 @@ setup-attestation:
 	@oc rollout restart deployment/trustee-deployment -n trustee-operator-system
 	@oc rollout status deployment/trustee-deployment -n trustee-operator-system --timeout=2m
 	@echo "Attestation secrets and RVPS reference values registered for namespace $(NAMESPACE)."
+
+.PHONY: show-initdata
+show-initdata:
+	@[ -n "$$NAMESPACE" ] || (echo "Error: NAMESPACE is not set"; exit 1)
+	@set -e; \
+	oc get secret trusteeconfig-https-cert-secret -n trustee-operator-system >/dev/null 2>&1 || { \
+	    echo "Error: trusteeconfig-https-cert-secret not found — run make setup-trustee-in-cluster first"; exit 1; \
+	}; \
+	KBS_SVC_URL="https://kbs-service.trustee-operator-system.svc.cluster.local:8080"; \
+	oc get secret trusteeconfig-https-cert-secret -n trustee-operator-system \
+	    -o jsonpath='{.data.certificate}' | base64 -d \
+	    | python3 scripts/show-initdata.py "$$KBS_SVC_URL" "$(NAMESPACE)" \
+	        --policy-mode $(POLICY_MODE) \
+	        --app-image $(APP_IMG) \
+	        --model-image $(MODEL_IMG)
 
 .PHONY: debug-attestation
 debug-attestation:
