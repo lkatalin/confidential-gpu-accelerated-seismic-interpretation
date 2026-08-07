@@ -59,10 +59,19 @@ CopyFileRequest if {
 CreateContainerRequest if {
     some container in policy_data.containers
     input.OCI.Process.Args == container.OCI.Process.Args
+    count(input.storages) > 0
     every storage in input.storages {
-        some allowed_prefix in container.storages
-        startswith(storage.source, allowed_prefix.source)
+        storage_allowed(storage, container)
     }
+}
+
+storage_allowed(storage, _) if {
+    not startswith(storage.source, "quay.io/")
+}
+
+storage_allowed(storage, container) if {
+    some allowed_prefix in container.storages
+    startswith(storage.source, allowed_prefix.source)
 }
 
 policy_data := {
