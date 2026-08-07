@@ -88,7 +88,7 @@ if [ ${#NODE_SANDBOXES[@]} -gt 0 ]; then
             echo ""
             echo "  Stopping sandbox $SID ($ns/$pod) on $node..."
             if oc debug node/"$node" -- chroot /host \
-                crictl stopp --timeout 30 "$SID" 2>/dev/null; then
+                crictl stopp "$SID" 2>/dev/null; then
                 echo "  ✓ sandbox stopped cleanly via kata-runtime"
             else
                 echo "  ✗ crictl stopp timed out — waiting 30s for background shutdown..."
