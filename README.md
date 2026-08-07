@@ -801,10 +801,13 @@ For confidential GPU passthrough the required ClusterPolicy values are:
 
 | Setting | Required | Reason |
 |---|---|---|
+| `ccManager.enabled` | `true` | Enables the CC Manager daemonset |
+| `ccManager.defaultMode` | `"on"` | Instructs CC Manager to enable Confidential Computing mode on all supported GPUs. Without this, CC mode must be enabled manually and will not be restored automatically after a node reprovision or GPU Operator reinstall. |
 | `driver.enabled` | `false` | Driver runs inside the kata guest VM, not on the host |
 | `toolkit.enabled` | `false` | Container toolkit not needed on host for kata passthrough |
 | `devicePlugin.enabled` | `false` | Conflicts with the kata-sandbox-device-plugin |
 | `vfioManager.enabled` | `true` | Manages the VFIO binding lifecycle for GPU passthrough |
+| `vfioManager.env.BIND_NVSWITCHES` | `"true"` on NVLink/SXM GPUs | H100 SXM5 and other NVLink-connected GPUs have NVSwitch PCIe devices. If NVSwitches are in the same IOMMU group as the GPU but not bound to vfio-pci, QEMU cannot map the GPU's IOMMU IOAS and every pod start fails with `IOMMU_IOAS_MAP failed: Bad address`. Required on any node where `nvidia.com/gpu.deploy.nvsm=true` is present. |
 | `kataSandboxDevicePlugin.enabled` | `true` | Advertises `nvidia.com/pgpu` resources to the scheduler |
 
 > **Note:** Disabling `driver`, `toolkit`, and `devicePlugin` affects all GPU nodes managed by this ClusterPolicy. If your cluster has GPU nodes serving both standard CUDA workloads (non-kata) and kata CC workloads on different nodes, do not apply this patch without first consulting the NVIDIA GPU Operator documentation on per-node workload configuration. In a cluster dedicated entirely to kata CC GPU workloads, this patch is safe to apply globally.
@@ -813,10 +816,19 @@ For confidential GPU passthrough the required ClusterPolicy values are:
 
 ```bash
 oc patch clusterpolicy gpu-cluster-policy --type merge \
-    -p '{"spec":{"driver":{"enabled":false},"toolkit":{"enabled":false},"devicePlugin":{"enabled":false}}}'
+    -p '{"spec":{"ccManager":{"enabled":true,"defaultMode":"on"},"driver":{"enabled":false},"toolkit":{"enabled":false},"devicePlugin":{"enabled":false}}}'
 ```
 
-Wait for the GPU Operator to reconcile — the driver daemonset will stop and vfioManager will rebind the GPU to vfio-pci:
+**For NVLink/SXM GPU systems (H100 SXM5, DGX, and any node where `nvidia.com/gpu.deploy.nvsm=true`)**, also bind NVSwitches to vfio-pci. Without this, NVSwitch PCIe devices remain unbound while sharing the GPU's IOMMU group, causing `IOMMU_IOAS_MAP failed: Bad address` on every pod start:
+
+```bash
+GPU_NODE=$(oc get nodes -l nvidia.com/gpu.present=true -o jsonpath='{.items[0].metadata.name}')
+oc get node $GPU_NODE --show-labels | grep -q 'nvidia.com/gpu.deploy.nvsm' && \
+    oc patch clusterpolicy gpu-cluster-policy --type=merge \
+    -p '{"spec":{"vfioManager":{"enabled":true,"env":[{"name":"BIND_NVSWITCHES","value":"true"}]}}}'
+```
+
+Wait for the GPU Operator to reconcile — the driver daemonset will stop and vfioManager will rebind the GPU (and NVSwitches if present) to vfio-pci:
 
 ```bash
 oc get pods -n nvidia-gpu-operator -w
