@@ -147,6 +147,28 @@ while IFS=$'\t' read -r ns pod node runtime; do
     fi
 done <<< "$PODS"
 
+# --- GPU status check ---
+echo ""
+echo "=== GPU status (processes holding /dev/iommu) ==="
+NODES_CHECKED=()
+while IFS=$'\t' read -r ns pod node runtime; do
+    [[ "$runtime" != *kata* ]] && continue
+    [ -z "$node" ] && continue
+    [[ " ${NODES_CHECKED[*]} " == *" $node "* ]] && continue
+    NODES_CHECKED+=("$node")
+    echo ""
+    echo "  Node: $node"
+    GPU_HOLDERS=$(oc debug node/"$node" -- chroot /host lsof /dev/iommu 2>/dev/null | grep -v COMMAND || true)
+    if [ -z "$GPU_HOLDERS" ]; then
+        echo "  ✓ /dev/iommu — no processes holding GPUs"
+    else
+        echo "  ✗ /dev/iommu — GPU still held by:"
+        echo "$GPU_HOLDERS" | while read -r line; do
+            echo "    $line"
+        done
+    fi
+done <<< "$PODS"
+
 # --- Report any sandboxes that could not be stopped ---
 echo ""
 if [ ${#FAILED_STOPS[@]} -eq 0 ]; then
