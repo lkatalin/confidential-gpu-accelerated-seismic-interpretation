@@ -34,6 +34,8 @@ PODS=$(oc get pods $NS_ARG -o json 2>/dev/null | jq -r '
 ')
 
 FAILED_STOPS=()
+declare -A NODE_SANDBOXES   # node -> space-separated "ns/pod/sandbox_id" triples
+declare -A SKIP_DELETE       # "ns/pod" -> 1 for pods whose sandbox stop failed
 
 if [ -z "$PODS" ]; then
     echo "No Terminating pods found."
@@ -49,8 +51,6 @@ done <<< "$PODS"
 # --- Collect sandbox IDs for kata pods BEFORE deleting their records ---
 # The sandbox ID is needed to stop the runtime sandbox on the node.
 # It must be collected before force-deleting the pod record.
-declare -A NODE_SANDBOXES   # node -> space-separated "ns/pod/sandbox_id" triples
-declare -A SKIP_DELETE       # "ns/pod" -> 1 for pods whose sandbox stop failed
 
 while IFS=$'\t' read -r ns pod node runtime; do
     [[ "$runtime" != *kata* ]] && continue
