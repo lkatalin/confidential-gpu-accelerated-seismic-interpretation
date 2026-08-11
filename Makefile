@@ -2,7 +2,7 @@ CONTAINER_TOOL ?= podman
 REGISTRY       ?= quay.io/rh-ai-quickstart
 QUAY_REPO      ?= conf-gpu-accel-seismic-interp-deepseismic-model
 
-BASE_VERSION           := 0.1.0
+BASE_VERSION           := 0.2.0
 MODEL_CAR_BASE_VERSION := 0.1.0
 GIT_BRANCH             := $(shell git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
 
@@ -97,6 +97,7 @@ help:
 	@echo "    push-modelcar    - Push the ModelCar image to the registry"
 	@echo ""
 	@echo "  Application:"
+	@echo "    check-ui         - Preview the Gradio UI locally using uv (no model required)"
 	@echo "    build-app        - Build the Gradio application container image"
 	@echo "    push-app         - Push the application image to the registry"
 	@echo ""
@@ -542,6 +543,10 @@ sign-modelcar:
 	@[ -f "$(MODEL_OWNER_COSIGN_KEY)" ] || (echo "Error: $(MODEL_OWNER_COSIGN_KEY) not found — run 'make generate-model-owner-keys' first"; exit 1)
 	cosign sign --new-bundle-format=false --use-signing-config=false --tlog-upload=false --key $(MODEL_OWNER_COSIGN_KEY) $(MODEL_IMG)
 	@echo "Successfully signed $(MODEL_IMG)"
+
+.PHONY: check-ui
+check-ui:
+	uv run serving/app_dev.py
 
 .PHONY: build-app
 build-app:
