@@ -35,14 +35,15 @@ KATA_RUNTIME_CLASS    ?= kata-cc-nvidia-gpu
 POLICY_MODE           ?= locked
 # TDX infrastructure reference values for OSC 1.13.1 / kata-cc-nvidia-gpu.
 # Re-run scripts/collect-tdx-measurements.sh and update these after an OSC upgrade.
+TDX_MR_SEAM      ?=
+TDX_TD_ATTRIBUTES ?= 0000001000000000
 TDX_MR_TD        ?= 27fb849fb05653add8be4b8c5b2793e66d1e25773a5c6f80dabbc10a5cb18bc40b7d5caaaf299e3a200f7018cdaa6f74
 TDX_XFAM         ?= e702060000000000
+TDX_RTMR_0       ?= 01cbbe9a7adb5f1f9459085d6f9f4bd02a5bf5352a8287b4ba963b35bc3f022c571fde23d04cb485acb4733f09b53493
 TDX_RTMR_1       ?= 93a576941cfe92d6427106944e475e96b702d1049975b6c64512345857d69dbab8d14c5f3dc88931cc582c9974fae8cc
 TDX_RTMR_2       ?= e882c8d18de74cc30d506d56962e5d3eb33c98e6c25f0329857c29f03a48fb17b6c6b1e2acc4741b305a6656a5f7d6c9
-TDX_MR_SEAM      ?=
-TDX_TD_ATTRIBUTES ?=
-TDX_RTMR_0       ?=
-TDX_RTMR_3       ?=
+TDX_RTMR_3       ?= 000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+
 # Space-separated list of node names to label nvidia.com/gpu.workload.config=vm-passthrough.
 # Nodes in this list stop advertising nvidia.com/gpu and instead advertise nvidia.com/pgpu.
 # Unlabeled GPU nodes continue serving standard CUDA workloads unchanged.
