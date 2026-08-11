@@ -34,8 +34,8 @@ AI-powered classification from North Sea seismic data — running with a three-f
     - [Step 3: Create the NRAS API key Secret](#step-3-create-the-nras-api-key-secret)
     - [Step 4: Deploy KBS](#step-4-deploy-kbs)
     - [Step 5: Verify the KBS route and set HAProxy timeout](#step-5-verify-the-kbs-route-and-set-haproxy-timeout)
-    - [Step 6: Register RVPS reference values](#step-6-register-rvps-reference-values)
-    - [Step 7: Register app-specific secrets with KBS](#step-7-register-app-specific-secrets-with-kbs)
+    - [Step 6: Register RVPS reference values and app-specific secrets with KBS](#step-6-register-rvps-reference-values-and-app-specific-secrets-with-kbs)
+    - [Step 7: Manual alternative for app-specific secrets](#step-7-manual-alternative-for-app-specific-secrets)
   - [Application deployment — application deployer (namespace admin)](#application-deployment--application-deployer-namespace-admin)
     - [Step 1: Create the project](#step-1-create-the-project)
     - [Step 2: Deploy the application](#step-2-deploy-the-application)
@@ -1094,7 +1094,7 @@ spec:
 
 #### Step 5: Verify the KBS route and set HAProxy timeout
 
-The Trustee operator creates a passthrough TLS Route named `kbs-route` automatically when it processes the TrusteeConfig. Verify it exists and note its hostname — you will need it in Step 6:
+The Trustee operator creates a passthrough TLS Route named `kbs-route` automatically when it processes the TrusteeConfig. Verify it exists and note its hostname:
 
 ```bash
 oc get route kbs-route -n trustee-operator-system -o jsonpath='{.spec.host}'
@@ -1109,7 +1109,16 @@ oc annotate route kbs-route -n trustee-operator-system \
 
 </details>
 
-#### Step 6: Register RVPS reference values
+#### Step 6: Register RVPS reference values and app-specific secrets with KBS
+
+`make setup-attestation` registers both the RVPS reference values (needed for attestation) and the app-specific secrets (model key, cosign key, image policy) with KBS in a single step. Before running it, set the required environment variables:
+
+```bash
+export NAMESPACE=<your deployment namespace, e.g. seismic-interpretation>
+export MODEL_ENCRYPTION_KEY=7f27f40d746b5d92c2d2fe744096b0712ef9951955de9773b3eb20e2be07beda
+```
+
+> **Note:** This key is intentionally public. The model it protects — a U-Net trained on the Dutch F3 benchmark dataset — is MIT-licensed and not proprietary. The purpose of this quickstart is to demonstrate the attestation and key release mechanism, not to protect a sensitive model. In a real deployment the encryption key must be kept secret.
 
 The attestation policy requires the following values in RVPS before it will release the model key:
 
@@ -1127,8 +1136,13 @@ The attestation policy requires the following values in RVPS before it will rele
 `tdx_pcr08` is computed at registration time from your namespace and KBS certificate. The TDX hardware measurements are stable for a given OSC version — the Makefile already contains the correct values for OSC **1.13.1** (see the `TDX_MR_TD` block near `KATA_RUNTIME_CLASS` in the Makefile).
 
 ```bash
-NAMESPACE=<your deployment namespace, e.g. seismic-interpretation>
-make setup-attestation NAMESPACE=$NAMESPACE
+make setup-attestation NAMESPACE=$NAMESPACE MODEL_ENCRYPTION_KEY=$MODEL_ENCRYPTION_KEY
+```
+
+If your images are in a custom registry (not the default `quay.io/rh-ai-quickstart`), also pass `REGISTRY`:
+
+```bash
+make setup-attestation NAMESPACE=$NAMESPACE MODEL_ENCRYPTION_KEY=$MODEL_ENCRYPTION_KEY REGISTRY=quay.io/your-org
 ```
 
 <details>
@@ -1183,33 +1197,20 @@ oc rollout status deployment/trustee-deployment -n trustee-operator-system --tim
 
 </details>
 
-#### Step 7: Register app-specific secrets with KBS
+#### Step 7: Manual alternative for app-specific secrets
 
-Register the model decryption key, cosign public key, and image verification policy with KBS. Secrets are registered as a Kubernetes Secret in `trustee-operator-system` named after the deployment namespace; the Trustee operator mounts it into KBS via its `kbsSecretResources` mechanism.
+> **Note:** If you ran `make setup-attestation` in Step 6, the secrets below are already registered and you can skip to [Application deployment](#application-deployment--application-deployer-namespace-admin). The manual steps here are provided for reference.
+
+The model decryption key, cosign public key, and image verification policy are registered as a Kubernetes Secret in `trustee-operator-system` named after the deployment namespace; the Trustee operator mounts it into KBS via its `kbsSecretResources` mechanism.
 
 The `image-policy` entry is a containers-policy.json document that requires sigstore-signed images for the app and model repos, verified against `kbs:///default/$NAMESPACE/cosign-key`. The CDH inside the kata guest fetches this policy from KBS at pod startup via `image_security_policy_uri` in its configuration and enforces it during image pull — an unsigned or incorrectly signed image is rejected before any container runs. This is the "executables" factor of the three-factor attestation check.
 
 The published quickstart images are pre-signed and `model-owner-verification-keys/cosign.pub` is already committed to this repository. If you are publishing your own images, see [Optional: Build and publish your own application](#optional-build-and-publish-your-own-application--model-owner) first.
 
-The model encryption key for the published quickstart model is:
-
-```
-MODEL_ENCRYPTION_KEY=7f27f40d746b5d92c2d2fe744096b0712ef9951955de9773b3eb20e2be07beda
-```
-
-> **Note:** This key is intentionally public. The model it protects — a U-Net trained on the Dutch F3 benchmark dataset — is MIT-licensed and not proprietary. The purpose of this quickstart is to demonstrate the attestation and key release mechanism, not to protect a sensitive model. In a real deployment the encryption key must be kept secret.
-
-To register automatically:
-
-```bash
-NAMESPACE=<your deployment namespace, e.g. seismic-interpretation>
-make setup-attestation NAMESPACE=$NAMESPACE
-```
-
 <details>
 <summary>Manual instructions</summary>
 
-The commands build the image verification policy for your namespace and registry, then create (or update) the namespace-scoped Secret in `trustee-operator-system` and register it with KBS. Set `REGISTRY` to match the registry where your images are published, or leave it unset to use the published quickstart images at `quay.io/rh-ai-quickstart`.
+Set `REGISTRY` to match the registry where your images are published, or leave it unset to use the published quickstart images at `quay.io/rh-ai-quickstart`.
 
 ```bash
 NAMESPACE=<your deployment namespace, e.g. seismic-interpretation>
@@ -1429,7 +1430,7 @@ make generate-model-owner-keys
 
 This produces two files in `model-owner-verification-keys/`:
 - `cosign.key` — your private signing key. **Keep this secret and never commit it.** (It is gitignored automatically.)
-- `cosign.pub` — the public key. This file is committed to the repository and registered with KBS in [Trustee setup Step 7](#step-7-register-app-specific-secrets-with-kbs) so KBS knows whose signature to trust.
+- `cosign.pub` — the public key. This file is committed to the repository and registered with KBS in [Trustee setup Step 6](#step-6-register-rvps-reference-values-and-app-specific-secrets-with-kbs) so KBS knows whose signature to trust.
 
 #### Step 2: Build, push, and sign the ModelCar
 
@@ -1521,7 +1522,7 @@ Pushes the image to quay.io. The target registry and repository are controlled b
 make model-owner-sign-app-container
 ```
 
-Signs the pushed application image with the model owner private key (`model-owner-verification-keys/cosign.key`). The signature is stored as an OCI referrer in the registry alongside the image. KBS uses the corresponding public key (`model-owner-verification-keys/cosign.pub`, registered in [Trustee setup Step 7](#step-7-register-app-specific-secrets-with-kbs)) to verify the signature during attestation. Signing uses `--new-bundle-format=false --use-signing-config=false --tlog-upload=false` to produce legacy-format signatures compatible with the version of image-rs bundled in OSC kata containers. cosign v3 defaults to DSSE bundle v0.3 format and OCI referrers, which image-rs does not support — the legacy format is required.
+Signs the pushed application image with the model owner private key (`model-owner-verification-keys/cosign.key`). The signature is stored as an OCI referrer in the registry alongside the image. KBS uses the corresponding public key (`model-owner-verification-keys/cosign.pub`, registered in [Trustee setup Step 6](#step-6-register-rvps-reference-values-and-app-specific-secrets-with-kbs)) to verify the signature during attestation. Signing uses `--new-bundle-format=false --use-signing-config=false --tlog-upload=false` to produce legacy-format signatures compatible with the version of image-rs bundled in OSC kata containers. cosign v3 defaults to DSSE bundle v0.3 format and OCI referrers, which image-rs does not support — the legacy format is required.
 
 #### After publishing
 
