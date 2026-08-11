@@ -361,7 +361,8 @@ check-prereqs:
 	if oc get tdxquotegenerationservices.trustedservices.intel.com intel-tdx-dcap -n intel-dcap \
 	        --ignore-not-found 2>/dev/null | grep -q .; then \
 	    QGS_RUNNING=$$(oc get pods -n intel-dcap 2>/dev/null \
-	        | grep "intel-tdx-dcap-qgs" | grep -c "Running" || echo "0"); \
+	        | grep "intel-tdx-dcap-qgs" | grep -c "Running" || true); \
+	    [ -z "$$QGS_RUNNING" ] && QGS_RUNNING=0; \
 	    if [ "$$QGS_RUNNING" -gt 0 ]; then \
 	        ok "TdxQuoteGenerationService: $$QGS_RUNNING QGS pod(s) running"; \
 	    else \
