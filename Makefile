@@ -375,6 +375,30 @@ check-prereqs:
 	fi; \
 	\
 	echo ""; \
+	echo "=== GPU passthrough ==="; \
+	if oc get clusterpolicy gpu-cluster-policy -o name 2>/dev/null | grep -q .; then \
+	    CP_JSON=$$(oc get clusterpolicy gpu-cluster-policy -o json 2>/dev/null); \
+	    DP=$$(echo "$$CP_JSON" | python3 -c "import json,sys; d=json.load(sys.stdin); print(str(d.get('spec',{}).get('devicePlugin',{}).get('enabled',True)).lower())"); \
+	    DRV=$$(echo "$$CP_JSON" | python3 -c "import json,sys; d=json.load(sys.stdin); print(str(d.get('spec',{}).get('driver',{}).get('enabled',True)).lower())"); \
+	    TK=$$(echo "$$CP_JSON" | python3 -c "import json,sys; d=json.load(sys.stdin); print(str(d.get('spec',{}).get('toolkit',{}).get('enabled',True)).lower())"); \
+	    if [ "$$DP" = "false" ] && [ "$$DRV" = "false" ] && [ "$$TK" = "false" ]; then \
+	        ok "ClusterPolicy: devicePlugin/driver/toolkit disabled for CC mode"; \
+	    else \
+	        warn "ClusterPolicy: devicePlugin/driver/toolkit must all be disabled for GPU passthrough"; \
+	        echo "       Run: make verify-gpu-passthrough for details"; \
+	    fi; \
+	    PGPU_NODES=$$(oc get nodes -o json 2>/dev/null \
+	        | python3 -c "import json,sys; nodes=json.load(sys.stdin)['items']; print(sum(1 for n in nodes if int(n.get('status',{}).get('allocatable',{}).get('nvidia.com/pgpu','0'))>0))"); \
+	    if [ "$$PGPU_NODES" -gt 0 ]; then \
+	        ok "GPU passthrough: $$PGPU_NODES node(s) with nvidia.com/pgpu allocatable"; \
+	    else \
+	        warn "GPU passthrough: no nodes have nvidia.com/pgpu — run: make verify-gpu-passthrough"; \
+	    fi; \
+	else \
+	    warn "ClusterPolicy not found — GPU passthrough checks skipped"; \
+	fi; \
+	\
+	echo ""; \
 	echo "=== Summary ==="; \
 	echo "  PASS: $$PASS   FAIL: $$FAIL   WARN: $$WARN"; \
 	echo ""; \
