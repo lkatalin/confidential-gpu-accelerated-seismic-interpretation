@@ -19,6 +19,7 @@ RUN pip install --no-cache-dir \
 
 COPY serving/app.py /app/app.py
 COPY serving/decrypt.sh /app/decrypt.sh
+COPY scripts/decode-ear-token.py /app/decode-ear-token.py
 
 ENV MODEL_PATH=/models-cache/dutchf3_unet_final.pth
 ENV PORT=7860
