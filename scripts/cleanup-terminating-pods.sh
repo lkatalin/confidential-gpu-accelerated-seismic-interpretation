@@ -109,10 +109,12 @@ if [ "$HAS_SANDBOXES" -eq 1 ]; then
                     else
                         echo "  ✗ crictl rmp --force also failed"
                     fi
-                    # Kill QEMU directly as final backup to release GPU iommufd bindings
+                    # Kill QEMU directly as final backup to release GPU iommufd bindings.
+                    # Filter by comm=qemu-kvm to avoid matching transient shim processes
+                    # that also carry the sandbox ID in their cmdline.
                     echo "  Killing QEMU process for sandbox $SID..."
                     KILL_RESULT=$(oc debug node/"$node" -- chroot /host sh -c \
-                        "pid=\$(pgrep -f 'sandbox-${SID}' | head -1); \
+                        "pid=\$(ps -C qemu-kvm -o pid=,args= | grep 'sandbox-${SID}' | awk '{print \$1}' | head -1); \
                          if [ -n \"\$pid\" ]; then \
                              kill -9 \"\$pid\" 2>/dev/null && echo \"KILLED:\$pid\" || echo KILL_FAILED; \
                          else echo ALREADY_GONE; fi" 2>/dev/null || echo KILL_FAILED)
@@ -128,7 +130,8 @@ if [ "$HAS_SANDBOXES" -eq 1 ]; then
                             echo ""
                             echo "  --- Diagnosing why QEMU is unkillable on $node ---"
                             DIAG_PID=$(oc debug node/"$node" -- chroot /host sh -c \
-                                "pgrep -f 'sandbox-${SID}' | head -1" 2>/dev/null || true)
+                                "ps -C qemu-kvm -o pid=,args= | grep 'sandbox-${SID}' | awk '{print \$1}' | head -1" \
+                                2>/dev/null || true)
                             if [ -z "$DIAG_PID" ]; then
                                 echo "  pgrep found no process — QEMU may have exited (delayed) or sandbox ID pattern changed"
                             else
