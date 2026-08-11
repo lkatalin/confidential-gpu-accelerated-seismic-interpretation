@@ -380,7 +380,8 @@ make setup-intel-tee    # Intel Xeon with TDX
 make setup-amd-tee      # AMD EPYC with SEV-SNP
 ```
 
-Or follow the manual steps below.
+<details>
+<summary>Manual instructions</summary>
 
 The node must boot with TDX kernel parameters active before the OSC operator can install kata-cc. This step applies two MachineConfigs and triggers a node reboot.
 
@@ -465,6 +466,8 @@ oc debug node/$NODE -- chroot /host dmesg | grep -i tdx
 # Expected: "virt/tdx: BIOS enabled" and "virt/tdx: module initialized"
 ```
 
+</details>
+
 To validate all hardware and software prerequisites before proceeding:
 
 ```bash
@@ -519,7 +522,8 @@ make setup-kata GPU_PASSTHROUGH_NODES="<node1> <node2>"
 
 Both `setup-kata` and `setup-gpu-passthrough` apply the `KubeletConfig` that extends the kubelet container-creation timeout (see Step 3 in the manual instructions below). This triggers an additional MachineConfig rolling update and node reboot after the kata setup completes.
 
-Or follow the manual steps below.
+<details>
+<summary>Manual instructions</summary>
 
 **Prerequisites:**
 - Logged in as cluster-admin
@@ -928,6 +932,8 @@ oc wait mcp/master --for=condition=Updated=True --timeout=30m
 
 Both files create a `KubeletConfig` named `kata-runtime-request-timeout` with `runtimeRequestTimeout: 10m0s` — the only difference is the `machineConfigPoolSelector` (`worker` vs `master`). Applying the wrong one results in the timeout not taking effect and pods failing with `RST_STREAM CANCEL` during image pull. The `make setup-kata` target auto-detects the cluster type by checking for nodes that are workers but not masters, and applies the correct file.
 
+</details>
+
 ---
 
 ### Intel TDX Quote Generation Service setup — application deployer (cluster-admin, once per cluster, Intel TDX only)
@@ -952,7 +958,8 @@ To install the operators automatically (cluster-admin required):
 make setup-dcap INTEL_API_KEY=<your-intel-pcs-api-key>
 ```
 
-Or follow the manual steps below.
+<details>
+<summary>Manual instructions</summary>
 
 #### Step 1: Install the Intel Device Plugin Operator
 
@@ -1000,6 +1007,8 @@ make verify-dcap
 - ✓ `tdxquotegenerationservices.trustedservices.intel.com` shows `intel-tdx-dcap` with `READY: True`
 - ✓ `intel-tdx-dcap-qgs-*` pod `Running` in `intel-dcap`
 
+</details>
+
 ---
 
 ### Trustee setup — model owner (cluster-admin, once per cluster)
@@ -1018,7 +1027,8 @@ To set up Trustee automatically (cluster-admin required):
 make setup-trustee-in-cluster NRAS_API_KEY=<your-ngc-api-key>
 ```
 
-Or follow the manual steps below.
+<details>
+<summary>Manual instructions</summary>
 
 #### Step 1: Install the Trustee operator
 
@@ -1097,6 +1107,8 @@ oc annotate route kbs-route -n trustee-operator-system \
     haproxy.router.openshift.io/timeout=120s
 ```
 
+</details>
+
 #### Step 6: Register RVPS reference values
 
 The attestation policy requires the following values in RVPS before it will release the model key:
@@ -1119,7 +1131,9 @@ NAMESPACE=<your deployment namespace, e.g. seismic-interpretation>
 make setup-attestation NAMESPACE=$NAMESPACE
 ```
 
-Or manually (equivalent to the above):
+<details>
+<summary>Manual instructions</summary>
+
 
 ```bash
 NAMESPACE=<your deployment namespace, e.g. seismic-interpretation>
@@ -1167,6 +1181,8 @@ oc rollout status deployment/trustee-deployment -n trustee-operator-system --tim
 > 3. Paste the Makefile block into the Makefile (near `KATA_RUNTIME_CLASS`) and update the OSC version comment.
 > 4. Source the `export` lines into your shell, then run `make setup-attestation NAMESPACE=$NAMESPACE` as normal.
 
+</details>
+
 #### Step 7: Register app-specific secrets with KBS
 
 Register the model decryption key, cosign public key, and image verification policy with KBS. Secrets are registered as a Kubernetes Secret in `trustee-operator-system` named after the deployment namespace; the Trustee operator mounts it into KBS via its `kbsSecretResources` mechanism.
@@ -1190,7 +1206,10 @@ NAMESPACE=<your deployment namespace, e.g. seismic-interpretation>
 make setup-attestation NAMESPACE=$NAMESPACE
 ```
 
-Or follow the manual steps below. The commands build the image verification policy for your namespace and registry, then create (or update) the namespace-scoped Secret in `trustee-operator-system` and register it with KBS. Set `REGISTRY` to match the registry where your images are published, or leave it unset to use the published quickstart images at `quay.io/rh-ai-quickstart`.
+<details>
+<summary>Manual instructions</summary>
+
+The commands build the image verification policy for your namespace and registry, then create (or update) the namespace-scoped Secret in `trustee-operator-system` and register it with KBS. Set `REGISTRY` to match the registry where your images are published, or leave it unset to use the published quickstart images at `quay.io/rh-ai-quickstart`.
 
 ```bash
 NAMESPACE=<your deployment namespace, e.g. seismic-interpretation>
@@ -1228,6 +1247,8 @@ oc patch kbsconfig trusteeconfig-kbs-config \
 
 oc rollout status deployment/trustee-deployment -n trustee-operator-system --timeout=2m
 ```
+
+</details>
 
 ---
 
