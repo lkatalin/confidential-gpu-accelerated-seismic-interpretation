@@ -1099,17 +1099,20 @@ oc annotate route kbs-route -n trustee-operator-system \
 
 #### Step 6: Register RVPS reference values
 
-The attestation policy requires five values in RVPS before it will release the model key:
+The attestation policy requires the following values in RVPS before it will release the model key:
 
 | Name | What it covers | Varies by |
 |---|---|---|
 | `tdx_pcr08` | Initdata hash — binds the pod to this KBS URL and namespace | Namespace + KBS cert |
+| `td_attributes` | TDX TD feature flags (e.g. debug mode disabled) | Hardware / OSC version |
 | `mr_td` | OVMF firmware measurement | OSC version |
+| `xfam` | QEMU CPU feature mask | OSC version / runtime class |
+| `rtmr_0` | UEFI firmware measurement | OSC version |
 | `rtmr_1` | kata kernel + initrd measurement | OSC version |
 | `rtmr_2` | Additional boot measurement | OSC version |
-| `xfam` | QEMU CPU feature mask | OSC version / runtime class |
+| `rtmr_3` | Runtime configuration measurement | OSC version |
 
-`tdx_pcr08` is computed at registration time from your namespace and KBS certificate. The four TDX hardware measurements are stable for a given OSC version — the Makefile already contains the correct values for OSC **1.13.1** (see the `TDX_MR_TD` block near `KATA_RUNTIME_CLASS` in the Makefile).
+`tdx_pcr08` is computed at registration time from your namespace and KBS certificate. The TDX hardware measurements are stable for a given OSC version — the Makefile already contains the correct values for OSC **1.13.1** (see the `TDX_MR_TD` block near `KATA_RUNTIME_CLASS` in the Makefile).
 
 ```bash
 NAMESPACE=<your deployment namespace, e.g. seismic-interpretation>
@@ -1136,15 +1139,20 @@ echo "tdx_pcr08: $PCR8"
 
 # TDX hardware reference values for OSC 1.13.1 / kata-cc-nvidia-gpu.
 # If you are running a different OSC version, see the note below.
+TDX_TD_ATTRIBUTES=0000001000000000
 TDX_MR_TD=27fb849fb05653add8be4b8c5b2793e66d1e25773a5c6f80dabbc10a5cb18bc40b7d5caaaf299e3a200f7018cdaa6f74
 TDX_XFAM=e702060000000000
+TDX_RTMR_0=01cbbe9a7adb5f1f9459085d6f9f4bd02a5bf5352a8287b4ba963b35bc3f022c571fde23d04cb485acb4733f09b53493
 TDX_RTMR_1=93a576941cfe92d6427106944e475e96b702d1049975b6c64512345857d69dbab8d14c5f3dc88931cc582c9974fae8cc
 TDX_RTMR_2=e882c8d18de74cc30d506d56962e5d3eb33c98e6c25f0329857c29f03a48fb17b6c6b1e2acc4741b305a6656a5f7d6c9
+TDX_RTMR_3=000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 
-# Upsert all five entries. Running for a second namespace adds that namespace's
-# tdx_pcr08 without removing existing values — each namespace has a distinct PCR8.
+# Running for a second namespace adds that namespace's tdx_pcr08 without
+# removing existing values — each namespace has a distinct PCR8.
 CURRENT_REF=$(oc get configmap trusteeconfig-rvps-reference-values -n trustee-operator-system -o jsonpath='{.data.reference_value}' 2>/dev/null || echo '{}')
-NEW_REF=$(TDX_MR_TD=$TDX_MR_TD TDX_XFAM=$TDX_XFAM TDX_RTMR_1=$TDX_RTMR_1 TDX_RTMR_2=$TDX_RTMR_2 python3 scripts/update-rvps.py "$CURRENT_REF" "$PCR8")
+NEW_REF=$(TDX_TD_ATTRIBUTES=$TDX_TD_ATTRIBUTES TDX_MR_TD=$TDX_MR_TD TDX_XFAM=$TDX_XFAM \
+    TDX_RTMR_0=$TDX_RTMR_0 TDX_RTMR_1=$TDX_RTMR_1 TDX_RTMR_2=$TDX_RTMR_2 TDX_RTMR_3=$TDX_RTMR_3 \
+    python3 scripts/update-rvps.py "$CURRENT_REF" "$PCR8")
 PATCH=$(echo "$NEW_REF" | python3 -c 'import json,sys; print(json.dumps({"data":{"reference_value":sys.stdin.read().strip()}}))')
 oc patch configmap trusteeconfig-rvps-reference-values -n trustee-operator-system --type merge -p "$PATCH"
 oc rollout restart deployment/trustee-deployment -n trustee-operator-system
