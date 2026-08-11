@@ -49,11 +49,15 @@ def _swatch(hex_color: str, label: str) -> str:
 
 
 DESCRIPTION = """
+<div style="font-size: 1.5em;">
+
 Upload a 2-D seismic section as a `.npy` file (**shape: depth × crossline, float32**)
 and the model will classify each pixel into one of six North Sea rock types.
 
 Sample `.npy` files from the Dutch F3 dataset are included in the `samples/`
 directory of the quickstart repository.
+
+</div>
 """
 
 TABLE_DESCRIPTION = f"""
@@ -130,7 +134,8 @@ def classify(npy_file, count: int):
     buf.seek(0)
 
     new_count = count + 1
-    return Image.open(buf), new_count, new_count
+    label = f'<span style="font-size: 1.5em;">Classifications requested: {new_count}</span>'
+    return Image.open(buf), new_count, label
 
 
 def main():
@@ -142,7 +147,7 @@ def main():
 
     css = "footer { display: none !important; } .built-with { display: none !important; }"
 
-    with gr.Blocks(title="Seismic Facies Classification", css=css) as demo:
+    with gr.Blocks(title="Seismic Facies Classification") as demo:
         gr.Markdown("# Seismic Facies Classification")
         gr.Markdown(DESCRIPTION)
         npy_input = gr.File(label="Seismic section (.npy)", file_types=[".npy"])
@@ -150,7 +155,7 @@ def main():
             clear_btn = gr.ClearButton(components=[npy_input], value="Clear")
             submit_btn = gr.Button("Submit", variant="primary")
         count_state = gr.State(value=0)
-        counter = gr.Number(label="Classifications requested", value=0, interactive=False, precision=0)
+        counter = gr.Markdown(value='<span style="font-size: 1.5em;">Classifications requested: 0</span>')
         output_image = gr.Image(label="Facies classification", type="pil")
         gr.Markdown(TABLE_DESCRIPTION)
         submit_btn.click(
@@ -159,7 +164,7 @@ def main():
             outputs=[output_image, count_state, counter],
         )
 
-    demo.launch(server_name="0.0.0.0", server_port=PORT, show_api=False)
+    demo.launch(server_name="0.0.0.0", server_port=PORT, css=css)
 
 
 if __name__ == "__main__":
