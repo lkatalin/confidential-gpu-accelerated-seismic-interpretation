@@ -520,6 +520,12 @@ make setup-kata GPU_PASSTHROUGH_NODES="<node1> <node2>"
 
 `setup-gpu-passthrough` is safe to run repeatedly — use it any time you need to add or change which nodes are labeled without re-running the full `setup-kata` (which would re-apply MachineConfigs and trigger another node reboot rollout).
 
+To confirm that GPU passthrough is correctly configured — ClusterPolicy settings, node labels, VFIO/sandbox pods, and `nvidia.com/pgpu` allocatable resources — run:
+
+```bash
+make verify-gpu-passthrough
+```
+
 Both `setup-kata` and `setup-gpu-passthrough` apply the `KubeletConfig` that extends the kubelet container-creation timeout (see Step 3 in the manual instructions below). This triggers an additional MachineConfig rolling update and node reboot after the kata setup completes.
 
 <details>
