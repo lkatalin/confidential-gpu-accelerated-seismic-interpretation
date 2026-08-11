@@ -5,12 +5,21 @@
 # Reports failure rather than falling back to pkill.
 #
 # Usage:
-#   ./scripts/cleanup-terminating-pods.sh                        # all namespaces
-#   ./scripts/cleanup-terminating-pods.sh seismic-interpretation # specific namespace
+#   ./scripts/cleanup-terminating-pods.sh                           # all namespaces
+#   ./scripts/cleanup-terminating-pods.sh seismic-interpretation    # specific namespace
+#   ./scripts/cleanup-terminating-pods.sh --debug                   # all namespaces + QEMU diagnostics on kill failure
+#   ./scripts/cleanup-terminating-pods.sh seismic-interpretation -d # specific namespace + diagnostics
 
 set -euo pipefail
 
-NAMESPACE="${1:-}"
+DEBUG_MODE=0
+NAMESPACE=""
+for arg in "$@"; do
+    case "$arg" in
+        -d|--debug) DEBUG_MODE=1 ;;
+        *) NAMESPACE="$arg" ;;
+    esac
+done
 
 if [ -n "$NAMESPACE" ]; then
     NS_ARG="-n $NAMESPACE"
@@ -125,6 +134,46 @@ if [ "$HAS_SANDBOXES" -eq 1 ]; then
                             ;;
                         *)
                             echo "  ✗ Could not kill QEMU process — pod record will NOT be deleted"
+                            if [ "$DEBUG_MODE" -eq 1 ]; then
+                                echo ""
+                                echo "  --- Debug: diagnosing why QEMU is unkillable on $node ---"
+                                DIAG_PID=$(oc debug node/"$node" -- chroot /host sh -c \
+                                    "pgrep -f 'sandbox-${SID}' | head -1" 2>/dev/null || true)
+                                if [ -z "$DIAG_PID" ]; then
+                                    echo "  pgrep found no process — QEMU may have exited (delayed) or sandbox ID pattern changed"
+                                else
+                                    echo "  QEMU PID: $DIAG_PID"
+                                    echo ""
+                                    echo "  Process status (State: D = uninterruptible sleep):"
+                                    oc debug node/"$node" -- chroot /host sh -c \
+                                        "cat /proc/$DIAG_PID/status" 2>/dev/null \
+                                        || echo "  (could not read status)"
+                                    echo ""
+                                    echo "  Blocking kernel call (wchan):"
+                                    oc debug node/"$node" -- chroot /host sh -c \
+                                        "cat /proc/$DIAG_PID/wchan && echo" 2>/dev/null \
+                                        || echo "  (could not read wchan)"
+                                    echo ""
+                                    echo "  Kernel stack:"
+                                    oc debug node/"$node" -- chroot /host sh -c \
+                                        "cat /proc/$DIAG_PID/stack" 2>/dev/null \
+                                        || echo "  (could not read stack — may require elevated privileges)"
+                                    echo ""
+                                    echo "  Open device fds (vfio/iommu/kvm):"
+                                    oc debug node/"$node" -- chroot /host sh -c \
+                                        "ls -la /proc/$DIAG_PID/fd 2>/dev/null | grep -E 'vfio|iommu|kvm|dev' || echo '    (none matching vfio/iommu/kvm/dev)'" \
+                                        2>/dev/null || echo "  (could not list fds)"
+                                fi
+                                echo ""
+                                echo "  Recent kernel messages (vfio/iommu/kata/qemu):"
+                                oc debug node/"$node" -- chroot /host sh -c \
+                                    "dmesg | grep -iE 'vfio|iommu|kata|qemu' | tail -30" 2>/dev/null \
+                                    || echo "  (could not read dmesg)"
+                                echo "  --- End debug ---"
+                                echo ""
+                            else
+                                echo "  Tip: re-run with --debug to collect QEMU process state and kernel stack"
+                            fi
                             FAILED_STOPS+=("$node / $ns/$pod / $SID")
                             SKIP_DELETE["$ns/$pod"]=1
                             ;;
