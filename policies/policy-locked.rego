@@ -58,29 +58,23 @@ CopyFileRequest if {
 
 CreateContainerRequest if {
     some container in policy_data.containers
-#    input.OCI.Process.args == container.OCI.Process.args
+    input.OCI.Process.Args == container.OCI.Process.Args
     count(input.storages) > 0
     every storage in input.storages {
         storage_allowed(storage, container)
     }
 }
 
-storage_allowed(storage, _) if {
-    storage.driver == "ephemeral"
-    storage.source == "tmpfs"
-}
-
-# temporary figuring out why rule above did not work
-# instead
-storage_allowed(storage, _) if {
-    not startswith(storage.source, "quay.io/")
-}
-
-
 storage_allowed(storage, container) if {
     storage.driver == "image_guest_pull"
-    some allowed_prefix in container.storages
-    startswith(storage.source, allowed_prefix.source)
+    some allowed_storage in container.storages
+    startswith(storage.source, allowed_storage.source)
+}
+
+storage_allowed(storage, container) if {
+    storage.driver == "ephemeral"
+    some allowed_storage in container.storages
+    storage.source == allowed_storage.source
 }
 
 policy_data := {
@@ -88,23 +82,35 @@ policy_data := {
         {
             "OCI": {
                 "Process": {
-                    "args": ["/bin/cp", "-r", "/model/.", "/models-cache/"]
+                    "Args": ["/usr/bin/pod"]
                 }
             },
             "storages": [
-                {"source": "{model_image_repo}:"},
-                {"source": "{model_image_repo}@"}
+                {"source": "pause"}
             ]
         },
         {
             "OCI": {
                 "Process": {
-                    "args": ["/bin/bash", "-c", "bash /app/decrypt.sh && python /app/app.py"]
+                    "Args": ["/bin/cp", "-r", "/model/.", "/models-cache/"]
+                }
+            },
+            "storages": [
+                {"source": "{model_image_repo}:"},
+                {"source": "{model_image_repo}@"},
+                {"source": "tmpfs"}
+            ]
+        },
+        {
+            "OCI": {
+                "Process": {
+                    "Args": ["/bin/bash", "-c", "bash /app/decrypt.sh && python /app/app.py"]
                 }
             },
             "storages": [
                 {"source": "{app_image_repo}:"},
-                {"source": "{app_image_repo}@"}
+                {"source": "{app_image_repo}@"},
+                {"source": "tmpfs"}
             ]
         }
     ]
