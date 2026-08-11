@@ -1018,7 +1018,7 @@ make verify-dcap
 The Trustee Attestation Service contacts NVIDIA NRAS (`nras.attestation.nvidia.com`) to verify GPU CC reports. NRAS requires an NGC personal API key. To create one at [ngc.nvidia.com](https://ngc.nvidia.com):
 
 1. Click your name (top right) → **Account Settings** → **Generate API Key**
-2. Set a name (e.g. `NRAS Key`), set expiration, and under **Services Included** check **Public API Endpoints**
+2. Set a name (e.g. `NRAS Key`), set expiration, and under **Services Included** check **NGC Catalog**
 3. Copy the key immediately — it is shown only once
 
 To set up Trustee automatically (cluster-admin required):
