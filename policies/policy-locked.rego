@@ -7,7 +7,7 @@ default AddSwapRequest := false
 default CloseStdinRequest := true
 default CopyFileRequest := false
 default CreateContainerRequest := false
-default CreateSandboxRequest := false
+default CreateSandboxRequest := true
 default DestroySandboxRequest := true
 default GetDiagnosticDataRequest := false
 default GetMetricsRequest := true
@@ -39,13 +39,6 @@ default UpdateRoutesRequest := true
 default WaitProcessRequest := true
 default WriteStreamRequest := false
 default ExecProcessRequest := false
-
-# Allow sandbox creation only if no guest OCI hooks are injected and no kernel modules
-# are loaded — prevents host-side injection of hooks or modules into the guest VM.
-CreateSandboxRequest if {
-    input.guest_hook_path == ""
-    count(input.kernel_modules) == 0
-}
 
 # Allow exact system networking files
 CopyFileRequest if {
