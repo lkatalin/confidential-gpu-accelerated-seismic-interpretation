@@ -66,15 +66,9 @@ CreateContainerRequest if {
 }
 
 storage_allowed(storage, container) if {
-    storage.driver == "image_guest_pull"
     some allowed_storage in container.storages
+    storage.driver == allowed_storage.driver
     startswith(storage.source, allowed_storage.source)
-}
-
-storage_allowed(storage, container) if {
-    storage.driver == "ephemeral"
-    some allowed_storage in container.storages
-    storage.source == allowed_storage.source
 }
 
 policy_data := {
@@ -86,7 +80,7 @@ policy_data := {
                 }
             },
             "storages": [
-                {"source": "pause"}
+                {"driver": "image_guest_pull", "source": "pause"}
             ]
         },
         {
@@ -96,9 +90,9 @@ policy_data := {
                 }
             },
             "storages": [
-                {"source": "{model_image_repo}:"},
-                {"source": "{model_image_repo}@"},
-                {"source": "tmpfs"}
+                {"driver": "image_guest_pull", "source": "{model_image_repo}:"},
+                {"driver": "image_guest_pull", "source": "{model_image_repo}@"},
+                {"driver": "ephemeral", "source": "tmpfs"}
             ]
         },
         {
@@ -108,9 +102,9 @@ policy_data := {
                 }
             },
             "storages": [
-                {"source": "{app_image_repo}:"},
-                {"source": "{app_image_repo}@"},
-                {"source": "tmpfs"}
+                {"driver": "image_guest_pull", "source": "{app_image_repo}:"},
+                {"driver": "image_guest_pull", "source": "{app_image_repo}@"},
+                {"driver": "ephemeral", "source": "tmpfs"}
             ]
         }
     ]
